@@ -67,7 +67,7 @@ public final class Screen: ScreenObjectContainerConvertible {
     var videoCaptureLatency: TimeInterval = 0.0
     private(set) var renderer = ScreenRendererByCPU()
     private(set) var targetTimestamp: TimeInterval = 0.0
-    private(set) var videoTrackScreenObject = VideoTrackScreenObject()
+    public private(set) var videoTrackScreenObject = VideoTrackScreenObject()
     private var root: ScreenObjectContainer = .init()
     private var attributes: [NSString: NSObject] {
         return [
