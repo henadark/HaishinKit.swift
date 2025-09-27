@@ -42,109 +42,156 @@ struct PublishView: View {
     @EnvironmentObject var preference: PreferenceViewModel
     @StateObject private var model = PublishViewModel()
 
+    let imageSizePx: CGSize = CGSize(width: 720, height: 1280 + 30)  // наприклад, await mixer.screen.size
+    let bandHeightPx: CGFloat = 30
+    func a(scale: CGFloat) -> Bool {
+        print("W_W_W scale: \(scale)")
+        return true
+    }
+
     var body: some View {
         ZStack {
-            VStack {
+            Color.white
+            VStack(spacing: 0) {
                 MTHKViewRepresentable(previewSource: model)
-            }
-            VStack(alignment: .trailing) {
-                HStack(spacing: 16) {
-                    if !model.audioSources.isEmpty {
-                        Picker("AudioSource", selection: $model.audioSource) {
-                            ForEach(model.audioSources, id: \.description) { source in
-                                Text(source.description).tag(source)
+                    .aspectRatio(imageSizePx, contentMode: .fit).overlay {
+                        GeometryReader { geo in
+                            let viewW = geo.size.width
+                            let viewH = geo.size.height
+                            let imgW = imageSizePx.width
+                            let imgH = imageSizePx.height
+
+                            let scale = min(viewW / imgW, viewH / imgH)
+                            let s = a(scale: scale)
+                            let bandHpt = bandHeightPx * scale
+                            let contentHpt = imgH * scale
+                            let vertPad = max(0, (viewH - contentHpt) / 2)
+                            VStack {
+                                Spacer()
+                                HStack {
+//                                    Rectangle().fill(.red).frame(width: 16, height: 16)
+//                                        .padding(.bottom, 26)
+
+                                    Rectangle()
+                                        .fill(Color.clear)
+                                        .overlay(
+                                            Rectangle()
+                                                .fill(Color.yellow)
+                                                .frame(height: bandHpt)
+                                                .frame(width: 10, alignment: .center) // по ширині контенту
+//                                                .padding(.top, viewH - vertPad - bandHpt)       // від верху до низу смуги
+//                                                .padding(.bottom, vertPad)                       // низ контенту
+                                        )
+
+                                        .frame(height: bandHpt)
+//                                        .padding(.bottom, 8.5)
+//                                    Spacer()
+                                }
                             }
                         }
-                        .background(Color.black.opacity(0.2))
-                        .cornerRadius(16)
-                        .padding(16)
                     }
-                    Spacer()
-                    Button(action: { Task {
-                        model.flipCamera()
-                    }}, label: {
-                        Image(systemName:
-                                "arrow.trianglehead.2.clockwise.rotate.90.camera")
-                            .resizable()
-                            .scaledToFit()
-                            .foregroundColor(.white)
-                            .frame(width: 30, height: 30)
-                    })
-                    Button(action: { Task {
-                        model.toggleTorch()
-                    }}, label: {
-                        Image(systemName: model.isTorchEnabled ?
-                                "flashlight.on.circle.fill" :
-                                "flashlight.off.circle.fill")
-                            .resizable()
-                            .scaledToFit()
-                            .foregroundColor(.white)
-                            .frame(width: 30, height: 30)
-                    })
-                }.padding(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 16.0))
-                Picker("FPS", selection: $model.currentFPS) {
-                    ForEach(FPS.allCases) {
-                        Text($0.rawValue).tag($0)
-                    }
-                }
-                .onChange(of: model.currentFPS) { tag in
-                    model.setFrameRate(tag.frameRate)
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 150)
-                .padding()
-                Spacer()
+
+            Rectangle().fill(.red)
+                .frame(maxWidth: .infinity, maxHeight: 10)
             }
-            VStack {
-                Spacer()
-                TabView(selection: $model.visualEffectItem) {
-                    ForEach(VideoEffectItem.allCases) {
-                        Text($0.rawValue).padding()
-                    }
-                }
-                .tabViewStyle(PageTabViewStyle(indexDisplayMode: .automatic))
-                .frame(height: 120)
-                .padding(.bottom, 32)
-                .onChange(of: model.visualEffectItem) { tag in
-                    model.setVisualEffet(tag)
-                }
-            }
-            VStack {
-                Spacer()
-                HStack {
-                    Spacer()
-                    switch model.readyState {
-                    case .connecting:
-                        Spacer()
-                    case .open:
-                        Button(action: {
-                            model.stopPublishing()
-                        }, label: {
-                            Image(systemName: "stop.circle")
-                                .foregroundColor(.white)
-                                .font(.system(size: 24))
-                        })
-                        .frame(width: 60, height: 60)
-                        .background(Color.blue)
-                        .cornerRadius(30.0)
-                        .padding(EdgeInsets(top: 0, leading: 0, bottom: 16.0, trailing: 16.0))
-                    case .closing:
-                        Spacer()
-                    case .closed:
-                        Button(action: {
-                            model.startPublishing(preference)
-                        }, label: {
-                            Image(systemName: "record.circle")
-                                .foregroundColor(.white)
-                                .font(.system(size: 24))
-                        })
-                        .frame(width: 60, height: 60)
-                        .background(Color.blue)
-                        .cornerRadius(30.0)
-                        .padding(EdgeInsets(top: 0, leading: 0, bottom: 16.0, trailing: 16.0))
-                    }
-                }
-            }
+//            VStack(alignment: .trailing) {
+//                HStack(spacing: 16) {
+//                    if !model.audioSources.isEmpty {
+//                        Picker("AudioSource", selection: $model.audioSource) {
+//                            ForEach(model.audioSources, id: \.description) { source in
+//                                Text(source.description).tag(source)
+//                            }
+//                        }
+//                        .background(Color.black.opacity(0.2))
+//                        .cornerRadius(16)
+//                        .padding(16)
+//                    }
+//                    Spacer()
+//                    Button(action: { Task {
+//                        model.flipCamera()
+//                    }}, label: {
+//                        Image(systemName:
+//                                "arrow.trianglehead.2.clockwise.rotate.90.camera")
+//                            .resizable()
+//                            .scaledToFit()
+//                            .foregroundColor(.white)
+//                            .frame(width: 30, height: 30)
+//                    })
+//                    Button(action: { Task {
+//                        model.toggleTorch()
+//                    }}, label: {
+//                        Image(systemName: model.isTorchEnabled ?
+//                                "flashlight.on.circle.fill" :
+//                                "flashlight.off.circle.fill")
+//                            .resizable()
+//                            .scaledToFit()
+//                            .foregroundColor(.white)
+//                            .frame(width: 30, height: 30)
+//                    })
+//                }.padding(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 16.0))
+//                Picker("FPS", selection: $model.currentFPS) {
+//                    ForEach(FPS.allCases) {
+//                        Text($0.rawValue).tag($0)
+//                    }
+//                }
+//                .onChange(of: model.currentFPS) { tag in
+//                    model.setFrameRate(tag.frameRate)
+//                }
+//                .pickerStyle(.segmented)
+//                .frame(width: 150)
+//                .padding()
+//                Spacer()
+//            }
+//            VStack {
+//                Spacer()
+//                TabView(selection: $model.visualEffectItem) {
+//                    ForEach(VideoEffectItem.allCases) {
+//                        Text($0.rawValue).padding()
+//                    }
+//                }
+//                .tabViewStyle(PageTabViewStyle(indexDisplayMode: .automatic))
+//                .frame(height: 120)
+//                .padding(.bottom, 32)
+//                .onChange(of: model.visualEffectItem) { tag in
+//                    model.setVisualEffet(tag)
+//                }
+//            }
+//            VStack {
+//                Spacer()
+//                HStack {
+//                    Spacer()
+//                    switch model.readyState {
+//                    case .connecting:
+//                        Spacer()
+//                    case .open:
+//                        Button(action: {
+//                            model.stopPublishing()
+//                        }, label: {
+//                            Image(systemName: "stop.circle")
+//                                .foregroundColor(.white)
+//                                .font(.system(size: 24))
+//                        })
+//                        .frame(width: 60, height: 60)
+//                        .background(Color.blue)
+//                        .cornerRadius(30.0)
+//                        .padding(EdgeInsets(top: 0, leading: 0, bottom: 16.0, trailing: 16.0))
+//                    case .closing:
+//                        Spacer()
+//                    case .closed:
+//                        Button(action: {
+//                            model.startPublishing(preference)
+//                        }, label: {
+//                            Image(systemName: "record.circle")
+//                                .foregroundColor(.white)
+//                                .font(.system(size: 24))
+//                        })
+//                        .frame(width: 60, height: 60)
+//                        .background(Color.blue)
+//                        .cornerRadius(30.0)
+//                        .padding(EdgeInsets(top: 0, leading: 0, bottom: 16.0, trailing: 16.0))
+//                    }
+//                }
+//            }
         }
         .onAppear {
             model.startRunning(preference)

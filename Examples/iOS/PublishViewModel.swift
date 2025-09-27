@@ -29,10 +29,21 @@ final class PublishViewModel: ObservableObject {
     private var audioSourceService = AudioSourceService()
     @ScreenActor private var videoScreenObject: VideoTrackScreenObject?
     @ScreenActor private var currentVideoEffect: VideoEffect?
+    @ScreenActor private var bitStripEffect: BitStripEffect?
+    private let barHeightPx: CGFloat = StreamSettingsConstants.bandHeightPx
 
     init() {
         Task { @ScreenActor in
             videoScreenObject = VideoTrackScreenObject()
+            bitStripEffect = BitStripEffect()
+            bitStripEffect?.bandHeightPx = barHeightPx
+            bitStripEffect?.bits = StreamSettingsConstants.bits
+            bitStripEffect?.framesPerCode = StreamSettingsConstants.framesPerCode
+//            if let bit = bitStripEffect {
+//                let fps = await mixer.frameRate
+//                let per = max(1, Int((Double(fps) / 10.0).rounded()))
+//                bit.framesPerCode = per
+//            }
         }
     }
 
@@ -42,6 +53,20 @@ final class PublishViewModel: ObservableObject {
                 return
             }
             do {
+                // Зафіксувати вихідний розмір енкодера під поточний screen.size (врахуємо смугу нижче)
+                var v = await preference.makeVideoCodecSettings(session.stream.videoSettings)
+                v.videoSize = await mixer.screen.size
+                try await session.stream.setVideoSettings(v)
+                // Інкремент коду кожні 3 кадри
+                Task { @ScreenActor in
+                    bitStripEffect?.framesPerCode = StreamSettingsConstants.framesPerCode
+                    //                    if let bit = bitStripEffect {
+                    //                        let fps = await mixer.frameRate
+                    //                        let per = max(1, Int((Double(fps) / 10.0).rounded()))
+                    //                        bit.framesPerCode = per
+                    //                    }
+                }
+
                 try await session.connect {
                     Task { @MainActor in
                         self.isShowError = true
@@ -122,6 +147,13 @@ final class PublishViewModel: ObservableObject {
             await mixer.setVideoMixerSettings(videoMixerSettings)
             // Attach devices
             let back = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: currentPosition)
+
+            if back?.activeFormat.supportedColorSpaces.contains(.P3_D65) ?? false {
+                try back?.lockForConfiguration()
+                back?.activeColorSpace = .P3_D65     // (або .HLG, залежно від цілей)
+                back?.unlockForConfiguration()
+            }
+
             try? await mixer.attachVideo(back, track: 0)
             let front = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front)
             try? await mixer.attachVideo(front, track: 1) { videoUnit in
@@ -140,7 +172,7 @@ final class PublishViewModel: ObservableObject {
             videoScreenObject.horizontalAlignment = .right
             videoScreenObject.layoutMargin = .init(top: 16, left: 0, bottom: 0, right: 16)
             videoScreenObject.size = .init(width: 160 * 2, height: 90 * 2)
-            await mixer.screen.size = .init(width: 720, height: 1280)
+//            await mixer.screen.size = .init(width: 720, height: 1280)
             await mixer.screen.backgroundColor = UIColor.black.cgColor
             try? await mixer.screen.addChild(videoScreenObject)
         }
@@ -203,6 +235,11 @@ final class PublishViewModel: ObservableObject {
             if let videoEffect = videoEffect.makeVideoEffect() {
                 currentVideoEffect = videoEffect
                 _ = await mixer.screen.registerVideoEffect(videoEffect)
+                // Забезпечити, що BitStripEffect застосовується ОСТАННІМ
+                if let bit = bitStripEffect {
+                    _ = await mixer.screen.unregisterVideoEffect(bit)
+                    _ = await mixer.screen.registerVideoEffect(bit)
+                }
             }
         }
     }
@@ -234,6 +271,14 @@ final class PublishViewModel: ObservableObject {
                 }
                 // Sets to output frameRate.
                 try await mixer.setFrameRate(fps)
+                Task { @ScreenActor in
+                    bitStripEffect?.framesPerCode = StreamSettingsConstants.framesPerCode
+                    //                    if let bit = bitStripEffect {
+                    //                        let fps = await mixer.frameRate
+                    //                        let per = max(1, Int((Double(fps) / 10.0).rounded()))
+                    //                        bit.framesPerCode = per
+                    //                    }
+                }
             } catch {
                 logger.error(error)
             }
@@ -245,10 +290,20 @@ final class PublishViewModel: ObservableObject {
             if let orientation = await DeviceUtil.videoOrientation(by: UIApplication.shared.statusBarOrientation) {
                 await mixer.setVideoOrientation(orientation)
             }
-            if await UIDevice.current.orientation.isLandscape {
-                await mixer.screen.size = .init(width: 1280, height: 720)
-            } else {
-                await mixer.screen.size = .init(width: 720, height: 1280)
+            let isLandscape = await UIDevice.current.orientation.isLandscape
+            let base = isLandscape ? CGSize(width: 1280, height: 720) : CGSize(width:  720, height: 1280)
+            // Канвас: додаємо 30px знизу під смугу
+            await mixer.screen.size = .init(width: base.width, height: base.height + barHeightPx)
+
+            // Головний вбудований VideoTrackScreenObject — вирівнюємо догори, аспект
+            let main = await mixer.screen.videoTrackScreenObject
+            main.verticalAlignment = .top
+            main.videoGravity = .resizeAspect
+
+            // Реєструємо ефект на головному відео (разово/ідемпотентно)
+            if let bit = bitStripEffect {
+                _ = await mixer.screen.unregisterVideoEffect(bit)
+                _ = await mixer.screen.registerVideoEffect(bit)
             }
         }
     }

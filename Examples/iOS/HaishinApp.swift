@@ -11,7 +11,7 @@ struct HaishinApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            PublishView()
                 .environmentObject(preference)
         }
     }
