@@ -732,11 +732,13 @@ extension RTMPStream: _Stream {
                     guard let message = RTMPVideoMessage(streamId: id, timestamp: timedelta, sampleBuffer: sampleBuffer) else {
                         return
                     }
+                    print("✅")
                     doOutput(.one, chunkStreamId: .video, message: message)
                 } catch {
                     logger.warn(error)
                 }
             } else {
+                print("✅")
                 outgoing.append(sampleBuffer)
                 if sampleBuffer.formatDescription?.isCompressed == false {
                     outputs.forEach {
