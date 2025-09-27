@@ -360,6 +360,7 @@ public final actor MediaMixer {
                 displayLink.preferredFramesPerSecond = await Int(frameRate)
                 displayLink.startRunning()
                 for await updateFrame in displayLink.updateFrames {
+                    print("🔴")
                     guard let buffer = screen.makeSampleBuffer(updateFrame) else {
                         continue
                     }
