@@ -1,6 +1,5 @@
 import AVFoundation
 
-// MARK: -
 /**
  * The AudioCodec translate audio data to another format.
  * - seealso: https://developer.apple.com/library/ios/technotes/tn2236/_index.html

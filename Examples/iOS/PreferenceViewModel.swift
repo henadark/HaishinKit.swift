@@ -3,7 +3,7 @@ import SwiftUI
 
 @MainActor
 final class PreferenceViewModel: ObservableObject {
-    @Published var showIngestSheet: Bool = false
+    @Published var showPublishSheet: Bool = false
 
     var uri = Preference.default.uri
     var streamName = Preference.default.streamName

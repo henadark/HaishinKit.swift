@@ -113,7 +113,7 @@ final class TSReader {
         var isNotSync = true
         switch data.streamType {
         case .h264:
-            let units = nalUnitReader.read(&pes.data, type: AVCNALUnit.self)
+            let units = nalUnitReader.read(&pes.data, type: H264NALUnit.self)
             if let unit = units.first(where: { $0.type == .idr || $0.type == .slice }) {
                 var data = Data([0x00, 0x00, 0x00, 0x01])
                 data.append(unit.data)

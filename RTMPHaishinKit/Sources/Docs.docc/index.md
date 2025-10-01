@@ -1,11 +1,25 @@
 # ``RTMPHaishinKit``
 This module supports the RTMP protocol.
 
-## Overview
-This is a module that supports RTMP protocol. 
+## 🔍 Overview
+RTMPHaishinKit is RTMP protocols stack in Swift. 
 
-## 📓 RTMP Usage
-### Ingest
+## 🎨 Features
+- [x] FMLE-compatible Authentication
+- [x] Publish
+  - H264, HEVC, AAC and OPUS support.
+- [x] Playback
+  - H264, HEVC and AAC support.
+- [ ] Action Message Format
+  - [x] AMF0
+  - [ ] AMF3
+- [x] SharedObject
+- [x] RTMPS
+  - [x] Native (RTMP over SSL/TLS)
+- [x] [Enhanced RTMP](E-RTMP.md)
+
+## 📓 Usage
+### Publish
 ```swift
 let mixer = MediaMixer()
 let connection = RTMPConnection()

@@ -70,15 +70,21 @@ actor RTMPSession: Session {
             retryCount += 1
             try await connect(disconnected)
         }
-        _readyState.value = .open
-        retryCount = 0
-        // Errors at the NetStream layer, such as incorrect stream names,
-        // cannot be resolved by retrying, so they are thrown as exceptions.
-        switch method {
-        case .ingest:
-            _ = try await _stream.publish(uri.streamName)
-        case .playback:
-            _ = try await _stream.play(uri.streamName)
+        do {
+            retryCount = 0
+            switch method {
+            case .ingest:
+                _ = try await _stream.publish(uri.streamName)
+            case .playback:
+                _ = try await _stream.play(uri.streamName)
+            }
+            _readyState.value = .open
+        } catch {
+            // Errors at the NetStream layer, such as incorrect stream names,
+            // cannot be resolved by retrying, so they are thrown as exceptions.
+            try await connection.close()
+            _readyState.value = .closed
+            throw error
         }
         disconnctedTask = Task {
             for await event in await connection.status {

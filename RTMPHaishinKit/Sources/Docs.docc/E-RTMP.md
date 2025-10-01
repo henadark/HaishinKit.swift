@@ -1,5 +1,5 @@
 # Enhanced RTMP
-The support status of Enhanced RTMP in HaishinKit.
+The support status of Enhanced RTMP in RTMPHaishinKit.
 
 ## Overview
 An extended RTMP standard called Enhanced RTMP is being developed by the Veovera Software Organization.
@@ -13,7 +13,7 @@ Enhanced RTMP also requires support on the server side. Please check the support
 Support for AV1 is planned to be implemented once the hardware becomes compatible.
 - [x] Enhancing onMetaData
 - [ ] Defining Additional Video Codecs
-  - [ ] Ingest
+  - [ ] Publish
     - [x] HEVC
     - [ ] VP9
     - [ ] AV1
@@ -29,14 +29,14 @@ Support for AV1 is planned to be implemented once the hardware becomes compatibl
 - [ ] Enhancing onMetaData
 - [ ] Reconnect Request
 - [ ] Enhanced Video
-  - [ ] Ingest
+  - [ ] Publish
     - [ ] VP8
     - [ ] AV1(HDR)
   - [ ] Playback
     - [ ] VP8
     - [ ] AV1(HDR)
 - [ ] Enhanced Audio
-  - [ ] Ingest
+  - [ ] Publish
     - [x] OPUS
   - [ ] Playback
     - [ ] OPUS

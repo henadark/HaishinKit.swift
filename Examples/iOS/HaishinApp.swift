@@ -1,5 +1,6 @@
 import HaishinKit
 @preconcurrency import Logboard
+import RTCHaishinKit
 import RTMPHaishinKit
 import SRTHaishinKit
 import SwiftUI
@@ -19,6 +20,10 @@ struct HaishinApp: App {
         Task {
             await SessionBuilderFactory.shared.register(RTMPSessionFactory())
             await SessionBuilderFactory.shared.register(SRTSessionFactory())
+            await SessionBuilderFactory.shared.register(HTTPSessionFactory())
+
+            await RTCLogger.shared.setLevel(.debug)
+            LBLogger(kRTCHaishinKitIdentifier).level = .debug
         }
     }
 }

@@ -29,7 +29,7 @@ public protocol Session: NetworkConnection {
     var readyState: AsyncStream<SessionReadyState> { get }
 
     /// The stream instance.
-    var stream: any StreamConvertible { get }
+    var stream: any StreamConvertible { get async }
 
     /// Creates a new session with uri.
     init(uri: URL, method: SessionMethod)

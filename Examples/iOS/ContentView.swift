@@ -3,10 +3,10 @@ import SwiftUI
 struct ContentView: View {
     var body: some View {
         TabView {
-            IngestView()
+            PublishView()
                 .tabItem {
                     Image(systemName: "record.circle")
-                    Text("Ingest")
+                    Text("Publish")
                 }
 
             PlaybackView()

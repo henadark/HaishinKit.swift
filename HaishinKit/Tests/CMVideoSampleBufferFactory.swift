@@ -2,6 +2,47 @@ import AVFoundation
 import Foundation
 
 enum CMVideoSampleBufferFactory {
+    static func makeSampleBuffer(_ data: Data) -> CMSampleBuffer? {
+        var blockBuffer: CMBlockBuffer?
+        let status = data.withUnsafeBytes { (buffer: UnsafeRawBufferPointer) in
+            CMBlockBufferCreateWithMemoryBlock(
+                allocator: kCFAllocatorDefault,
+                memoryBlock: UnsafeMutableRawPointer(mutating: buffer.baseAddress),
+                blockLength: data.count,
+                blockAllocator: kCFAllocatorNull,
+                customBlockSource: nil,
+                offsetToData: 0,
+                dataLength: data.count,
+                flags: 0,
+                blockBufferOut: &blockBuffer
+            )
+        }
+        guard let blockBuffer else {
+            return nil
+        }
+        var timing = CMSampleTimingInfo(
+            duration: .invalid,
+            presentationTimeStamp: .invalid,
+            decodeTimeStamp: .invalid
+        )
+        var sampleBuffer: CMSampleBuffer?
+        let sampleStatus = CMSampleBufferCreateReady(
+            allocator: kCFAllocatorDefault,
+            dataBuffer: blockBuffer,
+            formatDescription: nil,
+            sampleCount: 1,
+            sampleTimingEntryCount: 1,
+            sampleTimingArray: &timing,
+            sampleSizeEntryCount: 1,
+            sampleSizeArray: [data.count],
+            sampleBufferOut: &sampleBuffer
+        )
+        guard sampleStatus == noErr else {
+            return nil
+        }
+        return sampleBuffer
+    }
+
     static func makeSampleBuffer(width: Int, height: Int) -> CMSampleBuffer? {
         var pixelBuffer: CVPixelBuffer?
         CVPixelBufferCreate(nil, width, height, kCVPixelFormatType_32BGRA, nil, &pixelBuffer)

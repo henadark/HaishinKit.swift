@@ -39,7 +39,9 @@ final class PlaybackViewModel: ObservableObject {
 
     func makeSession() async {
         do {
-            session = try await SessionBuilderFactory.shared.make(Preference.default.makeURL()).setMethod(.playback).build()
+            session = try await SessionBuilderFactory.shared.make(Preference.default.makeURL())
+                .setMethod(.playback)
+                .build()
             await session?.setMaxRetryCount(0)
             guard let session else {
                 return
@@ -65,7 +67,7 @@ final class PlaybackViewModel: ObservableObject {
     }
 }
 
-extension PlaybackViewModel: PiPHKSwiftUiView.PreviewSource {
+extension PlaybackViewModel: PiPHKViewRepresentable.PreviewSource {
     // MARK: PiPHKSwiftUiView.PreviewSource
     nonisolated func connect(to view: HaishinKit.PiPHKView) {
         Task { @MainActor in

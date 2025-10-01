@@ -1,7 +1,7 @@
 import CoreMedia
 import HaishinKit
 
-extension [AVCNALUnit] {
+extension [H264NALUnit] {
     func makeFormatDescription(_ nalUnitHeaderLength: Int32 = 4) -> CMFormatDescription? {
         guard
             let pps = first(where: { $0.type == .pps }),

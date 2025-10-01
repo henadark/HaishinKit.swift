@@ -45,11 +45,11 @@ struct PreferenceView: View {
             }
             Section {
                 Button(action: {
-                    model.showIngestSheet.toggle()
+                    model.showPublishSheet.toggle()
                 }, label: {
-                    Text("Memory release test for IngestView")
-                }).sheet(isPresented: $model.showIngestSheet, content: {
-                    IngestView()
+                    Text("Memory release test for PublishView")
+                }).sheet(isPresented: $model.showPublishSheet, content: {
+                    PublishView()
                 })
             } header: {
                 Text("Test Case")

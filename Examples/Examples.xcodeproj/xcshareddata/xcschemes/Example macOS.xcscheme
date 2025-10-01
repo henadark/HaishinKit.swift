@@ -15,7 +15,7 @@
             buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "29C932931CD76FD300283FC5"
+               BlueprintIdentifier = "BCFE627D2E770A9900941209"
                BuildableName = "Example macOS.app"
                BlueprintName = "Example macOS"
                ReferencedContainer = "container:Examples.xcodeproj">
@@ -44,7 +44,7 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "29C932931CD76FD300283FC5"
+            BlueprintIdentifier = "BCFE627D2E770A9900941209"
             BuildableName = "Example macOS.app"
             BlueprintName = "Example macOS"
             ReferencedContainer = "container:Examples.xcodeproj">
@@ -61,7 +61,7 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "29C932931CD76FD300283FC5"
+            BlueprintIdentifier = "BCFE627D2E770A9900941209"
             BuildableName = "Example macOS.app"
             BlueprintName = "Example macOS"
             ReferencedContainer = "container:Examples.xcodeproj">
