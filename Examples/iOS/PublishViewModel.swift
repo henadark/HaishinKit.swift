@@ -22,21 +22,30 @@ final class PublishViewModel: ObservableObject {
     @Published private(set) var audioSources: [AudioSource] = []
     // If you want to use the multi-camera feature, please make create a MediaMixer with a capture mode.
     // let mixer = MediaMixer(captureSesionMode: .multi)
-    private(set) var mixer = MediaMixer(captureSessionMode: .multi)
+    private(set) var mixer = MediaMixer(captureSessionMode: .single)
     private var tasks: [Task<Void, Swift.Error>] = []
     private var session: (any Session)?
     private var currentPosition: AVCaptureDevice.Position = .back
     private var audioSourceService = AudioSourceService()
-    @ScreenActor private var videoScreenObject: VideoTrackScreenObject?
     @ScreenActor private var currentVideoEffect: VideoEffect?
     @ScreenActor private var bitStripEffect: BitStripEffect?
     private let barHeightPx: CGFloat = StreamSettingsConstants.bandHeightPx
 
+    private var retryCount = 0
+    private let maxRetryCount = 5
+    private var isStopping = false
+    private var reconnectTask: Task<Void, Never>?
+
+//    private let fullResOutput = AVCaptureVideoDataOutput()
+//    private let fullResQueue = DispatchQueue(label: "FullResCapture")
+    private let fullResFrameHandler = FullResFrameHandler()
+    private let frameStripeRenderer = try! FrameStripeRendererBuilder().buildFrameStripeRenderer()
+
     init() {
         Task { @ScreenActor in
-            videoScreenObject = VideoTrackScreenObject()
+//            videoScreenObject = VideoTrackScreenObject()
             bitStripEffect = BitStripEffect()
-            bitStripEffect?.bandHeightPx = barHeightPx
+//            bitStripEffect?.bandHeightPx = barHeightPx
             bitStripEffect?.bits = StreamSettingsConstants.bits
             bitStripEffect?.framesPerCode = StreamSettingsConstants.framesPerCode
 //            if let bit = bitStripEffect {
@@ -46,36 +55,25 @@ final class PublishViewModel: ObservableObject {
 //            }
         }
     }
-
     func startPublishing(_ preference: PreferenceViewModel) {
         Task {
             guard let session else {
                 return
             }
             do {
-                // Зафіксувати вихідний розмір енкодера під поточний screen.size (врахуємо смугу нижче)
-                var v = await preference.makeVideoCodecSettings(session.stream.videoSettings)
-                v.videoSize = await mixer.screen.size
-                try await session.stream.setVideoSettings(v)
-                // Інкремент коду кожні 3 кадри
-                Task { @ScreenActor in
-                    bitStripEffect?.framesPerCode = StreamSettingsConstants.framesPerCode
-                    //                    if let bit = bitStripEffect {
-                    //                        let fps = await mixer.frameRate
-                    //                        let per = max(1, Int((Double(fps) / 10.0).rounded()))
-                    //                        bit.framesPerCode = per
-                    //                    }
-                }
 
-                try await session.connect {
+                try await session.connect { [weak self] in
                     Task { @MainActor in
-                        self.isShowError = true
+                        guard let self else { return }
+                        if !self.isStopping {
+                            self.handleUnexpectedDisconnect(preference)
+                        }
                     }
                 }
             } catch {
-                self.error = error
-                self.isShowError = true
-                logger.error(error)
+                Task { @MainActor [weak self] in
+                    self?.handleConnectError(error, preference)
+                }
             }
         }
     }
@@ -90,91 +88,376 @@ final class PublishViewModel: ObservableObject {
         }
     }
 
-    func makeSession(_ preference: PreferenceViewModel) async {
+    func makeSession(_ preference: PreferenceViewModel) async throws {
         // Make session.
-        do {
-            session = try await SessionBuilderFactory.shared.make(preference.makeURL())
-                .setMethod(.ingest)
-                .build()
-            guard let session else {
-                return
-            }
-            await mixer.addOutput(session.stream)
-            tasks.append(Task {
-                for await readyState in await session.readyState {
-                    self.readyState = readyState
-                    switch readyState {
-                    case .open:
+        session = try await SessionBuilderFactory.shared.make(preference.makeURL())
+            .setMethod(.ingest)
+            .build()
+
+        guard let session else { return }
+
+        await mixer.addOutput(session.stream)
+        tasks.append(Task {
+            for await readyState in await session.readyState {
+                self.readyState = readyState
+                switch readyState {
+                case .open:
+                    retryCount = 0
+                    Task { @MainActor in
                         UIApplication.shared.isIdleTimerDisabled = false
-                    default:
+                    }
+                case .closed:
+                    Task { @MainActor in
                         UIApplication.shared.isIdleTimerDisabled = true
                     }
+                case .connecting, .closing:
+                    break
                 }
-            })
-        } catch {
-            self.error = error
-            isShowError = true
-        }
-        do {
-            if let session {
-                try await session.stream.setAudioSettings(preference.makeAudioCodecSettings(session.stream.audioSettings))
             }
-        } catch {
-            self.error = error
-            isShowError = true
-        }
-        do {
-            if let session {
-                try await session.stream.setVideoSettings(preference.makeVideoCodecSettings(session.stream.videoSettings))
-            }
-        } catch {
-            self.error = error
-            isShowError = true
-        }
+        })
+
+        try await session.stream.setAudioSettings(preference.makeAudioCodecSettings(session.stream.audioSettings))
+
+        var videoCodecSettings = await preference.makeVideoCodecSettings(session.stream.videoSettings)
+        videoCodecSettings.videoSize = await mixer.screen.size
+        try await session.stream.setVideoSettings(videoCodecSettings)
     }
 
+//    func startRunning(_ preference: PreferenceViewModel) {
+//        Task { @ScreenActor in
+//            await audioSourceService.setUp()
+////            await mixer.configuration { session in
+////                // It is required for the stereo setting.
+////                session.automaticallyConfiguresApplicationAudioSession = false
+////
+//////                if session.canAddOutput(fullResFrameHandler.fullResOutput) {
+//////                    session.addOutputWithNoConnections(fullResFrameHandler.fullResOutput)
+//////                    fullResFrameHandler.fullResOutput.alwaysDiscardsLateVideoFrames = false
+//////                    fullResFrameHandler.fullResOutput.setSampleBufferDelegate(fullResFrameHandler, queue: fullResFrameHandler.fullResQueue)
+////////                    session.addOutput(fullResFrameHandler.fullResOutput)
+//////                }
+////
+////
+////                if !session.outputs.contains(fullResFrameHandler.fullResOutput) {
+////                        if session.canAddOutput(fullResFrameHandler.fullResOutput) {
+////                            fullResFrameHandler.fullResOutput.alwaysDiscardsLateVideoFrames = false
+////                            fullResFrameHandler.fullResOutput.setSampleBufferDelegate(
+////                                fullResFrameHandler,
+////                                queue: fullResFrameHandler.fullResQueue
+////                            )
+////                            session.addOutput(fullResFrameHandler.fullResOutput)
+////                        }
+////                    }
+////
+////                    // 2. Шукаємо input, який належить задній камері
+////                    guard
+////                        let input = session.inputs
+////                            .compactMap({ $0 as? AVCaptureDeviceInput })
+////                            .first(where: { $0.device.position == .back }),
+////                        let port = input.ports.first(where: { $0.mediaType == .video })
+////                    else { return }
+////
+////                    // 3. Створюємо конекшн з цим портом до нашого output
+////                    if session.connections.contains(where: { $0.output === fullResFrameHandler.fullResOutput }) {
+////                        return // конекшн уже є
+////                    }
+////                    let connection = AVCaptureConnection(inputPorts: [port],
+////                                                         output: fullResFrameHandler.fullResOutput)
+////                    if session.canAddConnection(connection) {
+////                        session.addConnection(connection)
+////                    }
+////            }
+//
+//            // SetUp a mixer.
+//            await mixer.setSessionPreset(preference.sessionPreset)
+//            await mixer.setMonitoringEnabled(DeviceUtil.isHeadphoneConnected())
+//            var videoMixerSettings = await mixer.videoMixerSettings
+//            videoMixerSettings.mode = .offscreen
+//            await mixer.setVideoMixerSettings(videoMixerSettings)
+//            // Attach devices
+//            let back = await AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: currentPosition)
+//
+//
+//            do {
+//                try await mixer.attachVideo(back, track: 0) { [weak self] videoUnit in
+//                    if videoUnit.connection?.isVideoStabilizationSupported == true {
+//                        videoUnit.preferredVideoStabilizationMode = .standard
+//                    }
+//                    if let device = videoUnit.device {
+//                        do {
+//                            try device.lockForConfiguration()
+//                            if device.activeFormat.supportedColorSpaces.contains(.P3_D65) {
+//                                device.activeColorSpace = .P3_D65     // (або .HLG, залежно від цілей)
+//                            }
+//                            if device.isExposureModeSupported(.continuousAutoExposure) {
+//                                device.exposureMode = .continuousAutoExposure
+//                            }
+//                            device.unlockForConfiguration()
+//                        } catch {
+//                            self?.showError(error)
+//                            return
+//                        }
+//                    }
+//
+////                    guard let port = videoUnit.input?.ports.first(
+////                            where: { $0.mediaType == .video &&
+////                                     $0.sourceDeviceType == videoUnit.device?.deviceType &&
+////                                     $0.sourceDevicePosition == videoUnit.device?.position }) else { return }
+////
+////                        try await mixer.configuration { session in
+////                            let connection = AVCaptureConnection(inputPorts: [port],
+////                                                                 output: fullResFrameHandler.fullResOutput)
+////                            if session.canAddConnection(connection) {
+////                                session.addConnection(connection)
+////                            }
+////                        }
+//                }
+//            } catch {
+//                showError(error)
+//                return
+//            }
+//
+//
+//            await mixer.configuration { session in
+//                // It is required for the stereo setting.
+//                session.automaticallyConfiguresApplicationAudioSession = false
+//
+////                if session.canAddOutput(fullResFrameHandler.fullResOutput) {
+////                    session.addOutputWithNoConnections(fullResFrameHandler.fullResOutput)
+////                    fullResFrameHandler.fullResOutput.alwaysDiscardsLateVideoFrames = false
+////                    fullResFrameHandler.fullResOutput.setSampleBufferDelegate(fullResFrameHandler, queue: fullResFrameHandler.fullResQueue)
+//////                    session.addOutput(fullResFrameHandler.fullResOutput)
+////                }
+//
+//
+//                if !session.outputs.contains(fullResFrameHandler.fullResOutput) {
+//                        if session.canAddOutput(fullResFrameHandler.fullResOutput) {
+//                            fullResFrameHandler.fullResOutput.alwaysDiscardsLateVideoFrames = false
+//                            fullResFrameHandler.fullResOutput.setSampleBufferDelegate(
+//                                fullResFrameHandler,
+//                                queue: fullResFrameHandler.fullResQueue
+//                            )
+////                            fullResFrameHandler.fullResOutput.videoSettings = kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+//                            fullResFrameHandler.fullResOutput.videoSettings = [
+//                                kCVPixelBufferPixelFormatTypeKey as String:
+//                                    Int(kCVPixelFormatType_420YpCbCr8BiPlanarFullRange)
+//                            ]
+//                            session.addOutput(fullResFrameHandler.fullResOutput)
+//                        }
+//                    }
+//
+//                    // 2. Шукаємо input, який належить задній камері
+//                    guard
+//                        let input = session.inputs
+//                            .compactMap({ $0 as? AVCaptureDeviceInput })
+//                            .first(where: { $0.device.position == .back }),
+//                        let port = input.ports.first(where: { $0.mediaType == .video })
+//                    else { return }
+//
+//                    // 3. Створюємо конекшн з цим портом до нашого output
+//                    if session.connections.contains(where: { $0.output === fullResFrameHandler.fullResOutput }) {
+//                        return // конекшн уже є
+//                    }
+//                    let connection = AVCaptureConnection(inputPorts: [port],
+//                                                         output: fullResFrameHandler.fullResOutput)
+//                    if session.canAddConnection(connection) {
+//                        session.addConnection(connection)
+//                    }
+//            }
+//
+//
+//
+////            let front = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front)
+////            do {
+////                try await mixer.attachVideo(front, track: 1) { [weak self] videoUnit in
+////                    videoUnit.isVideoMirrored = true
+////                    if videoUnit.connection?.isVideoStabilizationSupported == true {
+////                        videoUnit.preferredVideoStabilizationMode = .standard
+////                    }
+////                    if let device = videoUnit.device {
+////                        do {
+////                            try device.lockForConfiguration()
+////                            if device.activeFormat.supportedColorSpaces.contains(.P3_D65) {
+////                                device.activeColorSpace = .P3_D65     // (або .HLG, залежно від цілей)
+////                            }
+////                            if device.isExposureModeSupported(.continuousAutoExposure) {
+////                                device.exposureMode = .continuousAutoExposure
+////                            }
+////                            device.unlockForConfiguration()
+////                        } catch {
+////                            self?.showError(error)
+////                            return
+////                        }
+////                    }
+////                }
+////            } catch {
+////                showError(error)
+////                return
+////            }
+//
+//            await mixer.setVideoOrientation(.portrait)
+//
+//            let size = StreamSettingsConstants.streamScreenSize
+//            await mixer.screen.size = .init(width: size.width, height: size.height)
+//            await mixer.screen.backgroundColor = UIColor.black.cgColor
+//
+//            if let bit = bitStripEffect {
+//                _ = await mixer.screen.unregisterVideoEffect(bit)
+//                _ = await mixer.screen.registerVideoEffect(bit)
+//            }
+//
+//            var settings = await mixer.audioMixerSettings
+//            settings.isMuted = true
+//            await mixer.setAudioMixerSettings(settings)
+//
+//            await mixer.startRunning()
+//            do {
+//                try await makeSession(preference)
+//            } catch {
+//                showError(error)
+//                return
+//            }
+//
+//            await startPublishing(preference)
+//        }
+//        Task {
+//            for await sources in await audioSourceService.sourcesUpdates() {
+//                audioSources = sources
+//                if let first = sources.first, audioSource == .empty {
+//                    audioSource = first
+//                }
+//            }
+//        }
+//    }
+
     func startRunning(_ preference: PreferenceViewModel) {
-        Task {
+        Task { @ScreenActor in
             await audioSourceService.setUp()
             await mixer.configuration { session in
                 // It is required for the stereo setting.
                 session.automaticallyConfiguresApplicationAudioSession = false
             }
+
             // SetUp a mixer.
+            await mixer.setSessionPreset(preference.sessionPreset)
             await mixer.setMonitoringEnabled(DeviceUtil.isHeadphoneConnected())
             var videoMixerSettings = await mixer.videoMixerSettings
             videoMixerSettings.mode = .offscreen
             await mixer.setVideoMixerSettings(videoMixerSettings)
             // Attach devices
-            let back = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: currentPosition)
+            let back = await AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: currentPosition)
 
-            if back?.activeFormat.supportedColorSpaces.contains(.P3_D65) ?? false {
-                try back?.lockForConfiguration()
-                back?.activeColorSpace = .P3_D65     // (або .HLG, залежно від цілей)
-                back?.unlockForConfiguration()
-            }
-
-            try? await mixer.attachVideo(back, track: 0)
-            let front = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front)
-            try? await mixer.attachVideo(front, track: 1) { videoUnit in
-                videoUnit.isVideoMirrored = true
-            }
-            await mixer.startRunning()
-            await makeSession(preference)
-        }
-        orientationDidChange()
-        Task { @ScreenActor in
-            guard let videoScreenObject else {
+            
+            do {
+                try await mixer.attachVideo(back, track: 0) { [weak self] videoUnit in
+                    if videoUnit.connection?.isVideoStabilizationSupported == true {
+                        videoUnit.preferredVideoStabilizationMode = .standard
+                    }
+                    if let device = videoUnit.device {
+                        do {
+                            try device.lockForConfiguration()
+                            if device.activeFormat.supportedColorSpaces.contains(.P3_D65) {
+                                device.activeColorSpace = .P3_D65     // (або .HLG, залежно від цілей)
+                            }
+                            if device.isExposureModeSupported(.continuousAutoExposure) {
+                                device.exposureMode = .continuousAutoExposure
+                            }
+                            device.unlockForConfiguration()
+                        } catch {
+                            self?.showError(error)
+                            return
+                        }
+                    }
+                }
+            } catch {
+                showError(error)
                 return
             }
-            videoScreenObject.cornerRadius = 16.0
-            videoScreenObject.track = 1
-            videoScreenObject.horizontalAlignment = .right
-            videoScreenObject.layoutMargin = .init(top: 16, left: 0, bottom: 0, right: 16)
-            videoScreenObject.size = .init(width: 160 * 2, height: 90 * 2)
-//            await mixer.screen.size = .init(width: 720, height: 1280)
+
+//            let front = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front)
+//            do {
+//                try await mixer.attachVideo(front, track: 1) { [weak self] videoUnit in
+//                    videoUnit.isVideoMirrored = true
+//                    if videoUnit.connection?.isVideoStabilizationSupported == true {
+//                        videoUnit.preferredVideoStabilizationMode = .standard
+//                    }
+//                    if let device = videoUnit.device {
+//                        do {
+//                            try device.lockForConfiguration()
+//                            if device.activeFormat.supportedColorSpaces.contains(.P3_D65) {
+//                                device.activeColorSpace = .P3_D65     // (або .HLG, залежно від цілей)
+//                            }
+//                            if device.isExposureModeSupported(.continuousAutoExposure) {
+//                                device.exposureMode = .continuousAutoExposure
+//                            }
+//                            device.unlockForConfiguration()
+//                        } catch {
+//                            self?.showError(error)
+//                            return
+//                        }
+//                    }
+//                }
+//            } catch {
+//                showError(error)
+//                return
+//            }
+
+            await mixer.setVideoOrientation(.portrait)
+
+            let size = StreamSettingsConstants.streamScreenSize
+            await mixer.screen.size = .init(width: size.width, height: size.height)
             await mixer.screen.backgroundColor = UIColor.black.cgColor
-            try? await mixer.screen.addChild(videoScreenObject)
+
+            if let bit = bitStripEffect {
+                _ = await mixer.screen.unregisterVideoEffect(bit)
+                _ = await mixer.screen.registerVideoEffect(bit)
+            }
+
+            var settings = await mixer.audioMixerSettings
+            settings.isMuted = true
+            await mixer.setAudioMixerSettings(settings)
+            await mixer.setFrameStripeRenderer(frameStripeRenderer: frameStripeRenderer)
+
+//            Task { [weak self] in
+//                try? await Task.sleep(for: .seconds(10))
+//                let descriptors: [FrameStripeVideoEffectDescriptor] = [
+//                    .init { MonochromeEffect() }
+//                ]
+//                self?.frameStripeRenderer.replaceVideoEffects(descriptors)
+//            }
+//
+//            Task { [weak self] in
+//                try? await Task.sleep(for: .seconds(20))
+//                self?.frameStripeRenderer.replaceVideoEffects([])
+//            }
+//
+//            Task { [weak self] in
+//                try? await Task.sleep(for: .seconds(10))
+//                print("🇰🇵🇰🇵🇰🇵🇰🇵🇰🇵🇰🇵🇰🇵🇰🇵🇰🇵🇰🇵🇰🇵🇰🇵🇰🇵🇰🇵🇰🇵🇰🇵🇰🇵🇰🇵🇰🇵🇰🇵🇰🇵🇰🇵🇰🇵🇰🇵🇰🇵🇰🇵🇰🇵🇰🇵🇰🇵🇰🇵")
+//                self?.frameStripeRenderer.updateFramesPerCode(15)
+//            }
+//
+//            Task { [weak self] in
+//                try? await Task.sleep(for: .seconds(10))
+//                print("🚀🚀🚀")
+//                self?.frameStripeRenderer.setPhotoMode(.photoModeDisabled)
+//            }
+//
+//            Task { [weak self] in
+//                try? await Task.sleep(for: .seconds(20))
+//                print("🚀🚀🚀")
+//                self?.frameStripeRenderer.setPhotoMode(.photoModeEnabled)
+//            }
+
+            await mixer.startRunning()
+            do {
+                try await makeSession(preference)
+            } catch {
+                showError(error)
+                return
+            }
+
+            await startPublishing(preference)
         }
         Task {
             for await sources in await audioSourceService.sourcesUpdates() {
@@ -204,23 +487,31 @@ final class PublishViewModel: ObservableObject {
         Task {
             if await mixer.isMultiCamSessionEnabled {
                 var videoMixerSettings = await mixer.videoMixerSettings
-                if videoMixerSettings.mainTrack == 0 {
-                    videoMixerSettings.mainTrack = 1
-                    await mixer.setVideoMixerSettings(videoMixerSettings)
-                    Task { @ScreenActor in
-                        videoScreenObject?.track = 0
-                    }
-                } else {
-                    videoMixerSettings.mainTrack = 0
-                    await mixer.setVideoMixerSettings(videoMixerSettings)
-                    Task { @ScreenActor in
-                        videoScreenObject?.track = 1
-                    }
-                }
+                videoMixerSettings.mainTrack = videoMixerSettings.mainTrack == 0 ? 1 : 0
+                await mixer.setVideoMixerSettings(videoMixerSettings)
+                currentPosition = videoMixerSettings.mainTrack == 0 ? .back : .front
             } else {
                 let position: AVCaptureDevice.Position = currentPosition == .back ? .front : .back
-                try? await mixer.attachVideo(AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position)) { videoUnit in
+                try? await mixer.attachVideo(AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position)) { [weak self] videoUnit in
                     videoUnit.isVideoMirrored = position == .front
+                    if videoUnit.connection?.isVideoStabilizationSupported == true {
+                        videoUnit.preferredVideoStabilizationMode = .standard
+                    }
+                    if let device = videoUnit.device {
+                        do {
+                            try device.lockForConfiguration()
+                            if device.activeFormat.supportedColorSpaces.contains(.P3_D65) {
+                                device.activeColorSpace = .P3_D65     // (або .HLG, залежно від цілей)
+                            }
+                            if device.isExposureModeSupported(.continuousAutoExposure) {
+                                device.exposureMode = .continuousAutoExposure
+                            }
+                            device.unlockForConfiguration()
+                        } catch {
+                            self?.showError(error)
+                            return
+                        }
+                    }
                 }
                 currentPosition = position
             }
@@ -273,11 +564,6 @@ final class PublishViewModel: ObservableObject {
                 try await mixer.setFrameRate(fps)
                 Task { @ScreenActor in
                     bitStripEffect?.framesPerCode = StreamSettingsConstants.framesPerCode
-                    //                    if let bit = bitStripEffect {
-                    //                        let fps = await mixer.frameRate
-                    //                        let per = max(1, Int((Double(fps) / 10.0).rounded()))
-                    //                        bit.framesPerCode = per
-                    //                    }
                 }
             } catch {
                 logger.error(error)
@@ -293,12 +579,7 @@ final class PublishViewModel: ObservableObject {
             let isLandscape = await UIDevice.current.orientation.isLandscape
             let base = isLandscape ? CGSize(width: 1280, height: 720) : CGSize(width:  720, height: 1280)
             // Канвас: додаємо 30px знизу під смугу
-            await mixer.screen.size = .init(width: base.width, height: base.height + barHeightPx)
-
-            // Головний вбудований VideoTrackScreenObject — вирівнюємо догори, аспект
-            let main = await mixer.screen.videoTrackScreenObject
-            main.verticalAlignment = .top
-            main.videoGravity = .resizeAspect
+            await mixer.screen.size = .init(width: base.width, height: base.height)
 
             // Реєструємо ефект на головному відео (разово/ідемпотентно)
             if let bit = bitStripEffect {
@@ -316,6 +597,48 @@ final class PublishViewModel: ObservableObject {
             await mixer.startCapturing()
         }
     }
+
+
+    private nonisolated func showError(_ error: Error) {
+        Task { @MainActor [weak self] in
+            self?.error = error
+            self?.isShowError = true
+        }
+    }
+
+    private func handleConnectError(_ error: Error, _ preference: PreferenceViewModel) {
+
+        logger.error(error)
+        guard retryCount < maxRetryCount else {
+            showError(StreamError.failedStartingSession(error))
+            return
+        }
+
+        scheduleReconnect(preference)
+    }
+
+    private func handleUnexpectedDisconnect(_ preference: PreferenceViewModel) {
+        guard !isStopping else { return }         // ми самі зупиняли стрім
+        guard reconnectTask == nil else { return } // ще триває попередній retry
+
+        scheduleReconnect(preference)
+    }
+
+    private func scheduleReconnect(_ preference: PreferenceViewModel) {
+        retryCount += 1
+        let delay = pow(2.0, Double(retryCount))      // backoff: 2, 4, 8...
+
+        reconnectTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard
+                Task.isCancelled == false,
+                let self
+            else { return }
+
+            self.reconnectTask = nil
+            self.startPublishing(preference)
+        }
+    }
 }
 
 extension PublishViewModel: MTHKViewRepresentable.PreviewSource {
@@ -323,5 +646,602 @@ extension PublishViewModel: MTHKViewRepresentable.PreviewSource {
         Task {
             await mixer.addOutput(view)
         }
+    }
+}
+
+
+enum StreamError: Error, LocalizedError, CustomLocalizedStringResourceConvertible {
+    case failedStartingSession(_ error: Error)
+
+    // MARK: LocalizedError
+
+    public var errorDescription: String? {
+        switch self {
+        case let .failedStartingSession(error):
+            return "failed Starting Session: \(error.localizedDescription)"
+        }
+    }
+
+    public var localizedStringResource: LocalizedStringResource {
+        LocalizedStringResource(stringLiteral: errorDescription ?? "")
+    }
+}
+
+// MARK: - Frame stripe renderer (works with CMSampleBuffer directly)
+
+
+final class FullResFrameHandler: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
+
+    let fullResOutput = AVCaptureVideoDataOutput()
+    let fullResQueue = DispatchQueue(label: "FullResCapture")
+    private let snapshotWorker: FrameSnapshotWorker? = try? SaveStreamFramesBuilder().buildFrameSnapshotWorker()
+
+    var onFrame: ((CMSampleBuffer) -> Void)?
+
+    func captureOutput(_ output: AVCaptureOutput,
+                       didOutput sampleBuffer: CMSampleBuffer,
+                       from connection: AVCaptureConnection) {
+//        onFrame?(sampleBuffer)
+
+        print("🔥🔥🔥")
+        guard let pixelBuffer = sampleBuffer.imageBuffer else { return }
+        let image = CIImage(cvPixelBuffer: pixelBuffer)
+        print("🔥🔥🔥")
+
+        let width  = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+        let format = CVPixelBufferGetPixelFormatType(pixelBuffer)
+
+        print("Full-res frame: \(width)×\(height), format: \(format)")
+        
+        let index: UInt64 = 102
+        let worker = snapshotWorker
+        Task {
+            await worker?.enqueueJPEG(image: image, codeIndex: index)
+        }
+
+        // Тут буфер має ту роздільність, яку задав sessionPreset (1080p, 4K тощо).
+        // Можна кодувати хоч у JPEG/HEIC через свій CIContext:
+        //   let image = CIImage(cvPixelBuffer: pixelBuffer)
+        //   snapshotWorker.enqueueJPEG(image: image, codeIndex: currentCodeIndex)
+        //
+        // або писати у файл через власний AVAssetWriter.
+    }
+}
+
+
+
+import CoreImage
+import CoreGraphics
+import AVFoundation
+import Synchronization
+import os
+
+@available(iOS 18.0, *)
+final class FrameCounterIOS18: FrameCounterProtocol {
+
+    private let frameCounterData: Mutex<FrameCounterData>
+
+    init(frameCounterData: consuming Mutex<FrameCounterData>) {
+        self.frameCounterData = frameCounterData//Mutex(frameCounterData.copy())
+    }
+
+    func increment() -> UInt64? {
+        let value = frameCounterData.withLock { $0.increment() }
+        return value
+    }
+
+    func updateFramesPerCode(_ framesPerCode: Int) {
+        frameCounterData.withLock { $0.updateFramesPerCode(framesPerCode) }
+    }
+
+    func setPhotoMode(_ mode: StreamSettings) {
+        frameCounterData.withLock { $0.setPhotoMode(mode) }
+    }
+}
+
+final class FrameCounter: FrameCounterProtocol {
+
+    private let frameCounterData: FrameCounterData
+
+    init(frameCounterData: FrameCounterData) {
+        self.frameCounterData = frameCounterData
+    }
+
+    func increment() -> UInt64? {
+        let value = frameCounterData.increment()
+        return value
+    }
+
+    func updateFramesPerCode(_ framesPerCode: Int) {
+        frameCounterData.updateFramesPerCode(framesPerCode)
+    }
+
+    func setPhotoMode(_ mode: StreamSettings) {
+        frameCounterData.setPhotoMode(mode)
+    }
+}
+
+protocol FrameCounterProtocol {
+    func increment() -> UInt64?
+    func updateFramesPerCode(_ framesPerCode: Int)
+    func setPhotoMode(_ mode: StreamSettings)
+}
+
+final class FrameCounterData {
+    private var framesPerCode: Int
+    private var sampleCounter: Int
+    private var frameIndex: UInt64
+    private var photoMode: StreamSettings
+
+    init(
+        framesPerCode: Int,
+        sampleCounter: Int,
+        frameIndex: UInt64,
+        photoMode: StreamSettings
+    ) {
+        self.framesPerCode = framesPerCode
+        self.sampleCounter = sampleCounter
+        self.frameIndex = frameIndex
+        self.photoMode = photoMode
+    }
+
+    func increment() -> UInt64? {
+        var isNewCode = false
+        var fullFrameCode: UInt64 = 0
+        if sampleCounter == 0 {
+            frameIndex &+= 1
+            isNewCode = true
+
+            let codeString = "\(frameIndex)\(photoMode.code)"
+            fullFrameCode = UInt64(codeString) ?? frameIndex
+        }
+        if photoMode.isEnabled {
+            sampleCounter = (sampleCounter + 1) % max(1, framesPerCode)
+        } else {
+            sampleCounter = 1
+        }
+        return isNewCode ? fullFrameCode : nil
+    }
+
+    func updateFramesPerCode(_ framesPerCode: Int) {
+        self.framesPerCode = framesPerCode
+    }
+
+    func setPhotoMode(_ mode: StreamSettings) {
+        photoMode = mode
+        sampleCounter = 0
+    }
+}
+
+struct FrameStripeVideoEffectDescriptor {
+    let make: @Sendable () -> VideoEffect
+}
+
+struct FrameStripeExposureSettings: Sendable {
+    let ev: Float
+}
+
+final class SnapshotBufferPool {
+    private let pool: CVPixelBufferPool
+    private let context: CIContext
+    let width: Int
+    let height: Int
+    let pixelFormat: OSType
+
+    init(
+        width: Int,
+        height: Int,
+        pixelFormat: OSType = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+    ) {
+        var pool: CVPixelBufferPool?
+        CVPixelBufferPoolCreate(nil, nil, [
+            kCVPixelBufferWidthKey: width,
+            kCVPixelBufferHeightKey: height,
+            kCVPixelBufferPixelFormatTypeKey: pixelFormat,
+            kCVPixelBufferIOSurfacePropertiesKey: [:]
+        ] as CFDictionary, &pool)
+        self.pool = pool!
+        self.context = CIContext(options: [.cacheIntermediates: false])
+        self.width = width
+        self.height = height
+        self.pixelFormat = pixelFormat
+    }
+
+    func makeCopy(of source: CIImage, colorSpace: CGColorSpace?) -> CVPixelBuffer? {
+        logger.info("☠️ START copy")
+        defer {
+            logger.info("☠️ END copy")
+        }
+        var pixelBufferOut: CVPixelBuffer?
+        CVPixelBufferPoolCreatePixelBuffer(nil, pool, &pixelBufferOut)
+        guard let dest = pixelBufferOut else { return nil }
+
+        let destination = CIRenderDestination(pixelBuffer: dest)
+        destination.isFlipped = false
+        let _ = try? context.startTask(
+            toRender: source,
+            from: source.extent,
+            to: destination,
+            at: .zero
+        ).waitUntilCompleted()
+
+        return dest
+    }
+
+    func makeCopy(of source: CVPixelBuffer, colorSpace: CGColorSpace?) -> CVPixelBuffer? {
+        logger.info("☠️ START copy")
+        defer {
+            logger.info("☠️ END copy")
+        }
+
+        return copyNV12PixelBuffer(from: source, using: pool)
+    }
+
+    private func copyNV12PixelBuffer(from source: CVPixelBuffer,
+                                     using pool: CVPixelBufferPool) -> CVPixelBuffer? {
+        var dest: CVPixelBuffer?
+        guard CVPixelBufferPoolCreatePixelBuffer(nil, pool, &dest) == kCVReturnSuccess,
+              let dest else { return nil }
+
+        CVPixelBufferLockBaseAddress(source, .readOnly)
+        CVPixelBufferLockBaseAddress(dest, [])
+
+        defer {
+            CVPixelBufferUnlockBaseAddress(dest, [])
+            CVPixelBufferUnlockBaseAddress(source, .readOnly)
+        }
+
+        // Y-plane
+        if let srcY = CVPixelBufferGetBaseAddressOfPlane(source, 0),
+           let dstY = CVPixelBufferGetBaseAddressOfPlane(dest, 0) {
+            let heightY = CVPixelBufferGetHeightOfPlane(source, 0)
+            let srcStrideY = CVPixelBufferGetBytesPerRowOfPlane(source, 0)
+            let dstStrideY = CVPixelBufferGetBytesPerRowOfPlane(dest, 0)
+
+            if srcStrideY == dstStrideY {
+                memcpy(dstY, srcY, heightY * srcStrideY)
+            } else {
+                for row in 0..<heightY {
+                    memcpy(dstY + row * dstStrideY, srcY + row * srcStrideY, min(srcStrideY, dstStrideY))
+                }
+            }
+        }
+
+        // UV-plane
+        if let srcUV = CVPixelBufferGetBaseAddressOfPlane(source, 1),
+           let dstUV = CVPixelBufferGetBaseAddressOfPlane(dest, 1) {
+            let heightUV = CVPixelBufferGetHeightOfPlane(source, 1)
+            let srcStrideUV = CVPixelBufferGetBytesPerRowOfPlane(source, 1)
+            let dstStrideUV = CVPixelBufferGetBytesPerRowOfPlane(dest, 1)
+
+            if srcStrideUV == dstStrideUV {
+                memcpy(dstUV, srcUV, heightUV * srcStrideUV)
+            } else {
+                for row in 0..<heightUV {
+                    memcpy(dstUV + row * dstStrideUV, srcUV + row * srcStrideUV, min(srcStrideUV, dstStrideUV))
+                }
+            }
+        }
+
+        return dest
+    }
+}
+
+final class FrameStripeRenderer: FrameStripeRendererProtocol, @unchecked Sendable {
+    // параметри смуги
+    private let bandHeightPx: Int = 30
+    private let bits: Int = 32
+    private let quietCellsEachSide: Int = 0
+    private let guardPattern: [UInt8] = []
+    private let stripColorSpace = CGColorSpaceCreateDeviceRGB()
+    let whiteRGB: SIMD3<Float> = .init(1, 1, 1)
+    let blackRGB: SIMD3<Float> = .init(0, 0, 0)
+    private lazy var blackCGColor = {
+        return CGColor(
+            red: CGFloat(blackRGB.x),
+            green: CGFloat(blackRGB.y),
+            blue: CGFloat(blackRGB.z),
+            alpha: 1
+        )
+    }()
+    private lazy var whiteCGColor = {
+        return CGColor(
+            red: CGFloat(whiteRGB.x),
+            green: CGFloat(whiteRGB.y),
+            blue: CGFloat(whiteRGB.z),
+            alpha: 1
+        )
+    }()
+
+    var isPhotoModeEnabled: Bool = false
+
+    private let ciContext = CIContext(options: [.cacheIntermediates: false])
+
+    private var effectDescriptors: [FrameStripeVideoEffectDescriptor] = []
+    private var effects: [VideoEffect] = []
+    private let effectsLock = OSAllocatedUnfairLock()
+
+    private let exposureLock = OSAllocatedUnfairLock()
+    private var exposure: FrameStripeExposureSettings?
+
+    // кеш смуги
+    private var cachedStrip: CIImage?
+    private var cachedWidth = 0
+    private var cachedCode: UInt64?
+
+    private let frameCounter: any FrameCounterProtocol
+
+    private let snapshotWorker: FrameSnapshotWorker
+    private var snapshotBufferPool: SnapshotBufferPool?
+
+    init(
+        frameCounter: any FrameCounterProtocol,
+        snapshotWorker: FrameSnapshotWorker
+    ) {
+        self.frameCounter = frameCounter
+        self.snapshotWorker = snapshotWorker
+    }
+
+    /// Накладає смугу на `sampleBuffer`, повертає код кадру (або `nil`, якщо буфер недоступний).
+
+    func renderStripe(on sampleBuffer: CMSampleBuffer) {
+        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+
+        logger.info("⬇️⬇️⬇️ Satrt render")
+        defer {
+            logger.info("⬆️⬆️⬆️ End render")
+        }
+
+        let newCode = frameCounter.increment()
+        if let code = newCode {
+            cachedCode = code
+        }
+
+        guard let codeValue = cachedCode else { return }
+
+        let currentEffects = currentEffects
+        let exposureSettings = currentExposureSettings
+
+        CVPixelBufferLockBaseAddress(pixelBuffer, [])
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
+
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+        guard width > 0, height > 0 else { return }
+
+        let pixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer)
+
+        if !currentEffects.isEmpty || exposureSettings != nil {
+            logger.info("📍 Satrt filters")
+            var image = CIImage(cvPixelBuffer: pixelBuffer)
+
+            if let exposureSettings {
+                if let filter = CIFilter(name: "CIExposureAdjust") {
+                    filter.setValue(image, forKey: kCIInputImageKey)
+                    filter.setValue(exposureSettings.ev, forKey: kCIInputEVKey)
+                    image = filter.outputImage ?? image
+                }
+            }
+
+            for effect in currentEffects {
+                image = effect.execute(image)
+            }
+
+            ciContext.render(
+                image,
+                to: pixelBuffer,
+                bounds: image.extent,
+                colorSpace: nil
+            )
+
+            logger.info("📍 End filters")
+        }
+
+        if newCode != nil {
+            logger.info("📍 Start save snapshot")
+            if
+                let snapshotPool = actualSnapshotBufferPool(width: width, height: height, pixelFormat: pixelFormat),
+                //            let copyPixelBuffer = snapshotPool.makeCopy(of: CIImage(cvPixelBuffer: pixelBuffer), colorSpace: nil)
+                let copyPixelBuffer = snapshotPool.makeCopy(of: pixelBuffer, colorSpace: nil)
+            {
+
+                let worker = snapshotWorker
+                Task.detached(priority: .userInitiated) {
+                    await worker.enqueueJPEG(pixelBuffer: copyPixelBuffer, codeIndex: codeValue)
+                }
+            }
+            logger.info("📍 End save snapshot")
+        }
+
+
+
+        if
+            cachedStrip == nil ||
+            cachedWidth != width ||
+            newCode != nil
+        {
+            logger.info("📍 Start make strip: \(codeValue)")
+            cachedStrip = makeStripImage(width: width,
+                                         height: bandHeightPx,
+                                         code: codeValue)
+            cachedWidth = width
+            print("W_W_W codeValue: \(codeValue)")
+            logger.info("📍 End make strip")
+
+        } else {
+            print("W_W_W --- codeValue: \(codeValue)")
+        }
+
+        guard let strip = cachedStrip else { return }
+
+        let translated = strip.transformed(
+            by: CGAffineTransform(translationX: 0,
+                                  y: 0)
+        )
+
+        ciContext.render(
+            translated,
+            to: pixelBuffer,
+            bounds: CGRect(
+                x: 0,
+                y: 0,
+                width: width,
+                height: bandHeightPx
+            ),
+            colorSpace: nil
+        )
+    }
+
+    private func makeStripImage(
+        width: Int,
+        height: Int,
+        code: UInt64
+    ) -> CIImage? {
+//        guard width > 0, height > 0 else { return nil }
+
+        var cells: [UInt8] = []
+        if quietCellsEachSide > 0 {
+            cells.append(contentsOf: Array(repeating: 0, count: quietCellsEachSide))
+        }
+        if !guardPattern.isEmpty {
+            cells.append(contentsOf: guardPattern)
+        }
+
+        let dataBits = max(1, bits)
+        for i in stride(from: dataBits - 1, through: 0, by: -1) {
+            let bit = UInt8((code >> UInt64(i)) & 1)
+            cells.append(bit)
+        }
+
+        if !guardPattern.isEmpty {
+            cells.append(contentsOf: guardPattern)
+        }
+        if quietCellsEachSide > 0 {
+            cells.append(contentsOf: Array(repeating: 0, count: quietCellsEachSide))
+        }
+
+        let totalCells = max(1, cells.count)
+
+        guard let ctx = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: stripColorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+
+        ctx.setFillColor(whiteCGColor)
+        ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+
+        let cellWidth = CGFloat(width) / CGFloat(totalCells)
+        var originX: CGFloat = 0
+        for (index, value) in cells.enumerated() {
+            let nextX = (index == totalCells - 1) ? CGFloat(width) : min(CGFloat(width), originX + cellWidth)
+            if value > 0 {
+                let startX = floor(originX)
+                ctx.setFillColor(blackCGColor)
+                ctx.fill(
+                    CGRect(
+                        x: startX,
+                        y: 0,
+                        width: max(1, ceil(nextX) - startX),
+                        height: CGFloat(height)
+                    )
+                )
+            }
+            originX = nextX
+        }
+
+        guard let cgImage = ctx.makeImage() else { return nil }
+        return CIImage(cgImage: cgImage)
+    }
+
+    func replaceVideoEffects(_ descriptors: [FrameStripeVideoEffectDescriptor]) {
+        effectsLock.lock()
+        effectDescriptors = descriptors
+        effects = descriptors.map { $0.make() }
+        effectsLock.unlock()
+    }
+
+    private var currentEffects: [VideoEffect] {
+        effectsLock.lock()
+        defer { effectsLock.unlock() }
+        return effects
+    }
+
+    func setExposure(_ settings: FrameStripeExposureSettings?) {
+        var newSettings = settings
+        if let ev = newSettings?.ev {
+            let tolerance: Float = 1e-3
+            newSettings = abs(ev) < tolerance ? nil : FrameStripeExposureSettings(ev: ev)
+        }
+
+        exposureLock.lock()
+        exposure = settings
+        exposureLock.unlock()
+    }
+
+    func updateFramesPerCode(_ framesPerCode: Int) {
+        frameCounter.updateFramesPerCode(framesPerCode)
+    }
+
+    private var currentExposureSettings: FrameStripeExposureSettings? {
+        exposureLock.lock()
+        defer { exposureLock.unlock() }
+        return exposure
+    }
+
+    private func actualSnapshotBufferPool(
+        width: Int,
+        height: Int,
+        pixelFormat: OSType
+    ) -> SnapshotBufferPool? {
+        if
+            snapshotBufferPool == nil
+            || snapshotBufferPool?.width != width
+            || snapshotBufferPool?.height != height
+            || snapshotBufferPool?.pixelFormat != pixelFormat
+        {
+            snapshotBufferPool = SnapshotBufferPool(width: width, height: height, pixelFormat: pixelFormat)
+        }
+        return snapshotBufferPool
+    }
+
+    func setPhotoMode(_ mode: StreamSettings) {
+        frameCounter.setPhotoMode(mode)
+    }
+}
+
+struct FrameStripeRendererBuilder {
+
+    func buildFrameStripeRenderer() throws -> FrameStripeRenderer {
+        let frameCounter: any FrameCounterProtocol
+        if #available(iOS 18.0, *) {
+            let frameCounterData: Mutex<FrameCounterData> = .init(
+                FrameCounterData(
+                framesPerCode: StreamSettingsConstants.framesPerCode,
+                sampleCounter: 0,
+                frameIndex: 0,
+                photoMode: .photoModeEnabled
+            )
+            )
+            frameCounter = FrameCounterIOS18(frameCounterData: frameCounterData)
+        } else {
+            let frameCounterData = FrameCounterData(
+                framesPerCode: StreamSettingsConstants.framesPerCode,
+                sampleCounter: 0,
+                frameIndex: 0,
+                photoMode: .photoModeEnabled
+            )
+            frameCounter = FrameCounter(frameCounterData: frameCounterData)
+        }
+        let snapshotWorker = try SaveStreamFramesBuilder().buildFrameSnapshotWorker()
+        return FrameStripeRenderer(
+            frameCounter: frameCounter,
+            snapshotWorker: snapshotWorker
+        )
     }
 }

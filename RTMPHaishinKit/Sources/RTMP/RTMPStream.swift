@@ -738,7 +738,7 @@ extension RTMPStream: _Stream {
                     logger.warn(error)
                 }
             } else {
-                print("✅")
+                print("😈")
                 outgoing.append(sampleBuffer)
                 if sampleBuffer.formatDescription?.isCompressed == false {
                     outputs.forEach {

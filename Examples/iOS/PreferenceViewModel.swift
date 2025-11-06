@@ -1,5 +1,7 @@
 import HaishinKit
 import SwiftUI
+import AVFoundation
+import VideoToolbox
 
 @MainActor
 final class PreferenceViewModel: ObservableObject {
@@ -16,6 +18,7 @@ final class PreferenceViewModel: ObservableObject {
     // MARK: - VideoCodecSettings.
     @Published var bitRateMode: VideoCodecSettings.BitRateMode = .average
     var isLowLatencyRateControlEnabled: Bool = false
+    let sessionPreset: AVCaptureSession.Preset = .hd4K3840x2160
 
     init() {
         if #available(iOS 16.0, *) {
@@ -27,6 +30,8 @@ final class PreferenceViewModel: ObservableObject {
         var newSettings = settings
         newSettings.bitRateMode = bitRateMode
         newSettings.isLowLatencyRateControlEnabled = isLowLatencyRateControlEnabled
+        newSettings.bitRate = 1200 * 1000
+        newSettings.profileLevel = kVTProfileLevel_H264_High_4_0 as String
         return newSettings
     }
 
@@ -41,5 +46,7 @@ final class PreferenceViewModel: ObservableObject {
             return URL(string: uri + "/" + streamName)
         }
         return URL(string: uri)
+
+//        return URL(string: "")
     }
 }
