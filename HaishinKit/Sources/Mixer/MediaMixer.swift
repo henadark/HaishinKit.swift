@@ -506,3 +506,9 @@ extension MediaMixer: AsyncRunner {
         }
     }
 }
+
+extension MediaMixer {
+    public func setFrameStripeRenderer(frameStripeRenderer: any FrameStripeRendererProtocol) {
+        self.videoIO.setFrameStripeRenderer(frameStripeRenderer: frameStripeRenderer)
+    }
+}
