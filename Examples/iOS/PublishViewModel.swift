@@ -342,14 +342,28 @@ final class PublishViewModel: ObservableObject {
             await mixer.setSessionPreset(preference.sessionPreset)
             await mixer.setMonitoringEnabled(DeviceUtil.isHeadphoneConnected())
             var videoMixerSettings = await mixer.videoMixerSettings
-            videoMixerSettings.mode = .offscreen
+            videoMixerSettings.mode = .passthrough
             await mixer.setVideoMixerSettings(videoMixerSettings)
             // Attach devices
-            let back = await AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: currentPosition)
+            let device = await AVCaptureDevice.default(.builtInTripleCamera, for: .video, position: currentPosition)
+            if let device {
+                do {
+                    try device.lockForConfiguration()
+                    device.videoZoomFactor = 2
+                    if device.activePrimaryConstituentDeviceSwitchingBehavior != .unsupported {
+                        device.setPrimaryConstituentDeviceSwitchingBehavior(
+                            .restricted,
+                            restrictedSwitchingBehaviorConditions: [.videoZoomChanged]
+                        )
+                    }
+                    device.unlockForConfiguration()
+                } catch {
+                    assertionFailure(error.localizedDescription)
+                }
+            }
 
-            
             do {
-                try await mixer.attachVideo(back, track: 0) { [weak self] videoUnit in
+                try await mixer.attachVideo(device, track: 0) { [weak self] videoUnit in
                     if videoUnit.connection?.isVideoStabilizationSupported == true {
                         videoUnit.preferredVideoStabilizationMode = .standard
                     }
@@ -718,16 +732,44 @@ import Synchronization
 import os
 
 @available(iOS 18.0, *)
-final class FrameCounterIOS18: FrameCounterProtocol {
+final class FrameCounterIOS18: FrameCounterProtocol, @unchecked Sendable {
+
+    struct FrameThrottleConfig {
+        let baselineFramesPerCode: Int
+        /// battery 10–20%
+        let lowBatteryFramesPerCode: Int
+        /// battery <10%
+        let criticalBatteryFramesPerCode: Int
+        /// thermalState == .fair
+        let fairThermalFramesPerCode: Int
+        let checkIntervalInFrames: Int
+    }
 
     private let frameCounterData: Mutex<FrameCounterData>
+    private var framesUntilCheck: Int
+    private let throttleConfig: FrameThrottleConfig
 
-    init(frameCounterData: consuming Mutex<FrameCounterData>) {
+    init(
+        frameCounterData: consuming Mutex<FrameCounterData>,
+        throttleConfig: FrameThrottleConfig
+    ) {
         self.frameCounterData = frameCounterData//Mutex(frameCounterData.copy())
+        self.throttleConfig = throttleConfig
+        self.framesUntilCheck = throttleConfig.checkIntervalInFrames
     }
 
     func increment() -> UInt64? {
         let value = frameCounterData.withLock { $0.increment() }
+
+        framesUntilCheck &-= 1
+        if framesUntilCheck <= 0 {
+            framesUntilCheck = throttleConfig.checkIntervalInFrames
+            let config = throttleConfig
+            Task { @MainActor [weak self] in
+                self?.updateThrottleIfNeeded(config: config)
+            }
+        }
+
         return value
     }
 
@@ -737,6 +779,25 @@ final class FrameCounterIOS18: FrameCounterProtocol {
 
     func setPhotoMode(_ mode: StreamSettings) {
         frameCounterData.withLock { $0.setPhotoMode(mode) }
+    }
+
+    @MainActor
+    private func updateThrottleIfNeeded(config: FrameThrottleConfig) {
+        logger.info("🔔 \(config.lowBatteryFramesPerCode)")
+        let thermal = ProcessInfo.processInfo.thermalState
+        if thermal == .fair {
+            updateFramesPerCode(config.fairThermalFramesPerCode)
+        } else {
+            UIDevice.current.isBatteryMonitoringEnabled = true
+            let battery = UIDevice.current.batteryLevel
+            if battery <= 0.1 {
+                updateFramesPerCode(config.criticalBatteryFramesPerCode)
+            } else if battery <= 0.2 {
+                updateFramesPerCode(config.lowBatteryFramesPerCode)
+            } else {
+                updateFramesPerCode(config.baselineFramesPerCode)
+            }
+        }
     }
 }
 
@@ -769,6 +830,7 @@ protocol FrameCounterProtocol {
 }
 
 final class FrameCounterData {
+
     private var framesPerCode: Int
     private var sampleCounter: Int
     private var frameIndex: UInt64
@@ -975,6 +1037,8 @@ final class FrameStripeRenderer: FrameStripeRendererProtocol, @unchecked Sendabl
     private let snapshotWorker: FrameSnapshotWorker
     private var snapshotBufferPool: SnapshotBufferPool?
 
+    private let decodeFrameIdentifierUseCase = DecodeFrameIdentifierUseCase()
+
     init(
         frameCounter: any FrameCounterProtocol,
         snapshotWorker: FrameSnapshotWorker
@@ -1004,7 +1068,10 @@ final class FrameStripeRenderer: FrameStripeRendererProtocol, @unchecked Sendabl
         let exposureSettings = currentExposureSettings
 
         CVPixelBufferLockBaseAddress(pixelBuffer, [])
-        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
+        defer {
+
+            CVPixelBufferUnlockBaseAddress(pixelBuffer, [])
+        }
 
         let width = CVPixelBufferGetWidth(pixelBuffer)
         let height = CVPixelBufferGetHeight(pixelBuffer)
@@ -1222,13 +1289,23 @@ struct FrameStripeRendererBuilder {
         if #available(iOS 18.0, *) {
             let frameCounterData: Mutex<FrameCounterData> = .init(
                 FrameCounterData(
-                framesPerCode: StreamSettingsConstants.framesPerCode,
-                sampleCounter: 0,
-                frameIndex: 0,
-                photoMode: .photoModeEnabled
+                    framesPerCode: StreamSettingsConstants.framesPerCode,
+                    sampleCounter: 0,
+                    frameIndex: 0,
+                    photoMode: .photoModeEnabled
+                )
             )
+            let throttleConfig = FrameCounterIOS18.FrameThrottleConfig(
+                baselineFramesPerCode: StreamSettingsConstants.framesPerCode,
+                lowBatteryFramesPerCode: StreamSettingsConstants.lowBatteryFramesPerCode,
+                criticalBatteryFramesPerCode: StreamSettingsConstants.criticalBatteryFramesPerCode,
+                fairThermalFramesPerCode: StreamSettingsConstants.fairThermalFramesPerCode,
+                checkIntervalInFrames: StreamSettingsConstants.checkIntervalInFrames
             )
-            frameCounter = FrameCounterIOS18(frameCounterData: frameCounterData)
+            frameCounter = FrameCounterIOS18(
+                frameCounterData: frameCounterData,
+                throttleConfig: throttleConfig
+            )
         } else {
             let frameCounterData = FrameCounterData(
                 framesPerCode: StreamSettingsConstants.framesPerCode,

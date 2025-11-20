@@ -923,101 +923,171 @@ actor FrameSnapshotWorker {
     }
 }
 
-public final class FrameSnapshotWorker2 {
+enum StreamSettingsConstants {
 
-    private let context: CIContext
-    private let colorSpace: CGColorSpace
-    private let lastFrame: LastFramesStore
+    static let frameBitStripeModel = FrameBitStripeModel()
+    static let bandHeightPx: CGFloat = 30
+    static let bits: Int = 32
 
-    init(
-        colorSpace: CGColorSpace,
-        context: CIContext,
-        lastFrame: LastFramesStore
-    ) {
-        self.colorSpace = colorSpace
-        self.context = context
-        self.lastFrame = lastFrame
+    static let framesPerCode: Int = 3
+    static let lowBatteryFramesPerCode: Int = 10
+    static let criticalBatteryFramesPerCode: Int =  15
+    static let fairThermalFramesPerCode: Int =  15
+    static let checkIntervalInFrames: Int =  30 * 60 // every 1 minute
+
+    static let fps: Int = 30
+    static let imageCompressionQuality = 1.0
+    static let sessionPreset: AVCaptureSession.Preset = .hd4K3840x2160
+    static let defaultBitRate: Int = 1200 * 1000
+    static let streamScreenSize = CGSize(width: 720, height: 1280)
+    static let originScreenSize: CGSize = CGSize(width: 3840, height: 2160)
+    static let directoryPhotoshootsName = "PhotoshootFrames"
+    static let prefixFrameNameFromat = "code_"
+    static let suffixFrameNameFromat = ".jpg"
+    static var fullFrameNameFromat: String {
+        // "code_%llu.jpg"
+        return "\(prefixFrameNameFromat)%llu\(suffixFrameNameFromat)"
     }
-
-    func enqueueJPEG(image: CIImage, codeIndex: UInt64) {
-        let opts: [CIImageRepresentationOption: Any] = [
-            CIImageRepresentationOption(rawValue: kCGImageDestinationLossyCompressionQuality as String): 1.0
-        ]
-//        print("W_W_W \(image.colorSpace?.name)")
-        guard let data = context.jpegRepresentation(
-            of: image,
-            colorSpace: image.colorSpace ?? colorSpace,
-            options: opts
-        )
-        else { return }
-        let sizeKB = Double(data.count) / 1024.0
-        logger.info("Frame number: \(codeIndex) - size: \(sizeKB)KB")
-
-        let lastFramesStore = lastFrame
-        Task {
-            await lastFramesStore.storeFrame(data, codeIndex: codeIndex)
-        }
+    static var savedFramesPerSecond: Int {
+        return fps / framesPerCode
     }
-
-    func enqueueRawBuffer(image: CIImage, codeIndex: UInt64) {
-
-        let extent = image.extent.integral
-        let width  = Int(extent.width)
-        let height = Int(extent.height)
-        let bytesPerPixel = 4                       // BGRA 8-bit
-        var raw = [UInt8](repeating: 0, count: width * height * bytesPerPixel)
-
-        context.render(
-            image,
-            toBitmap: &raw,
-            rowBytes: width * bytesPerPixel,
-            bounds: extent,
-            format: .BGRA8,
-            colorSpace: colorSpace
-        )
-
-        let rawData = Data(raw)
-//        let rawKB = Double(rawData.count) / 1024.0//
-//        logger.info("RAW Frame number: \(codeIndex) - size: \(rawKB)KB")
-
-        let lastFramesStore = lastFrame
-        Task {
-            await lastFramesStore.storeFrame(rawData, codeIndex: codeIndex)
-        }
-    }
-
-    func enqueueHEIC(image: CIImage, codeIndex: UInt64) {
-
-        let options: [CIImageRepresentationOption: Any] = [:
-//                .init(rawValue: kCGImageDestinationLossyCompressionQuality as String): 0.9
-        ]
-        guard let heicData = context.heifRepresentation(
-            of: image,
-            format: .RGBA8,
-            colorSpace: colorSpace,
-            options: options
-        )
-        else { return }
-
-//        let sizeKB = Double(heicData.count) / 1024.0
-//        logger.info("Frame number: \(codeIndex) - size: \(sizeKB)KB")
-
-        let lastFramesStore = lastFrame
-        Task {
-            await lastFramesStore.storeFrame(heicData, codeIndex: codeIndex)
-        }
+    static var lastFramesStoreCapacity: Int {
+        savedFramesPerSecond * 90 + 100
     }
 }
 
+struct FrameBitStripeModel: Sendable {
 
-enum StreamSettingsConstants {
+    let bandHeightPx: Int = 30
+    let bits: Int = 32
+    let quietCellsEachSide: Int = 0 // 4
+    let guardPattern: [UInt8] = [] // [1, 0, 1, 0, 1, 0]
+    let stripColorSpace = CGColorSpaceCreateDeviceRGB()
+    let whiteRGB: SIMD3<Float> = .init(1, 1, 1)
+    let blackRGB: SIMD3<Float> = .init(0, 0, 0)
+    let decodeThreshold: CGFloat = 0.5
+}
 
-    static let bandHeightPx: CGFloat = 30
-    static let bits: Int = 32
-    static let framesPerCode: Int = 3
-    static let fps: Int = 30
-    static let streamScreenSize = CGSize(width: 720, height: 1280)
-    static var savedFramesPerSecond: Int {
-        return fps / framesPerCode
+struct DecodeFrameIdentifierUseCase {
+
+    private let bitStripeModel: FrameBitStripeModel
+    private let streamScreenSize: CGSize
+    private let context: CIContext
+
+    init(
+        bitStripeModel: FrameBitStripeModel = StreamSettingsConstants.frameBitStripeModel,
+        streamScreenSize: CGSize = StreamSettingsConstants.originScreenSize,
+        context: CIContext = CIContext(options: [.cacheIntermediates: false])
+    ) {
+        self.bitStripeModel = bitStripeModel
+        self.streamScreenSize = streamScreenSize
+        self.context = context
+    }
+
+    func execute(
+        _ ciImage: CIImage
+    ) -> String? {
+        let extent = ciImage.extent
+        guard extent.width > 1, extent.height > 1 else { return nil }
+
+        let scale = extent.height / streamScreenSize.height
+
+        // 1) Прямокутник смуги (знизу або зверху)
+        let originBandHeight = CGFloat(bitStripeModel.bandHeightPx)
+        let scaledHeight = floor(originBandHeight * scale)
+        let bandH = min(scaledHeight, extent.height) //min(bandHeight, extent.height)
+        let bandRect = CGRect(x: extent.minX, y: extent.minY, width: extent.width, height: bandH)
+
+        // 2) Загальна кількість клітинок
+        let cellsTotal = bitStripeModel.quietCellsEachSide * 2 + bitStripeModel.guardPattern.count * 2 + bitStripeModel.bits
+        guard cellsTotal > 0 else { return nil }
+
+        // Невеликі відступи від меж клітин і по висоті, щоб уникати країв/шуму
+        let cellW = bandRect.width / CGFloat(cellsTotal)
+        let marginX = max(0.0, cellW * 0.15)
+        let marginY = max(0.0, bandRect.height * 0.30)
+
+        // 3) Допоміжна: середня яскравість прямокутника
+        func averageLuma(_ rect: CGRect) -> CGFloat {
+            guard let filter = CIFilter(name: "CIAreaAverage") else { return 1.0 }
+            filter.setValue(ciImage, forKey: kCIInputImageKey)
+            filter.setValue(CIVector(cgRect: rect), forKey: kCIInputExtentKey)
+            guard let onePixel = filter.outputImage else { return 1.0 }
+
+            var rgba = [UInt8](repeating: 0, count: 4)
+            context.render(
+                onePixel,
+                toBitmap: &rgba,
+                rowBytes: 4,
+                bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
+                format: .RGBA8,
+                colorSpace: CGColorSpaceCreateDeviceRGB()
+            )
+            let r = CGFloat(rgba[0]) / 255.0
+            let g = CGFloat(rgba[1]) / 255.0
+            let b = CGFloat(rgba[2]) / 255.0
+            return 0.2126 * r + 0.7152 * g + 0.0722 * b
+        }
+
+        // 4) Зняти луми по центру комірок
+        var lumas: [CGFloat] = []
+        lumas.reserveCapacity(cellsTotal)
+        for i in 0..<cellsTotal {
+            let x0 = bandRect.minX + CGFloat(i) * cellW + marginX
+            let x1 = bandRect.minX + CGFloat(i + 1) * cellW - marginX
+            let y0 = bandRect.minY + marginY
+            let y1 = bandRect.maxY - marginY
+            let sampleRect = CGRect(
+                x: max(x0, bandRect.minX),
+                y: max(y0, bandRect.minY),
+                width: max(1.0, x1 - x0),
+                height: max(1.0, y1 - y0)
+            )
+            lumas.append(averageLuma(sampleRect))
+        }
+
+        // 4.1) Динамічний поріг (якщо threshold < 0): ітеративна схема Ridler–Calvard
+        let thr: CGFloat = {
+            if bitStripeModel.decodeThreshold >= 0 { return bitStripeModel.decodeThreshold }
+            guard let minL = lumas.min(), let maxL = lumas.max() else { return 0.5 }
+            var t = (minL + maxL) * 0.5
+            for _ in 0..<6 {
+                var sum0: CGFloat = 0, cnt0: CGFloat = 0
+                var sum1: CGFloat = 0, cnt1: CGFloat = 0
+                for v in lumas {
+                    if v < t { sum1 += v; cnt1 += 1 } else { sum0 += v; cnt0 += 1 }
+                }
+                if cnt0 == 0 || cnt1 == 0 { break }
+                let m0 = sum0 / max(cnt0, 1)
+                let m1 = sum1 / max(cnt1, 1)
+                let nt = (m0 + m1) * 0.5
+                if abs(nt - t) < 1e-3 { t = nt; break }
+                t = nt
+            }
+            return t
+        }()
+
+        // 4.2) Перетворити у біти: білий=0, чорний=1
+        var cells: [Int] = []
+        cells.reserveCapacity(cellsTotal)
+        for v in lumas {
+            cells.append(v < thr ? 1 : 0)
+        }
+
+        // 5) Виділити дані (MSB→LSB)
+        let g = bitStripeModel.guardPattern.count
+        let dataStart = bitStripeModel.quietCellsEachSide + g
+        let dataEnd = dataStart + bitStripeModel.bits
+        guard dataEnd <= cells.count else { return nil }
+        let dataBits = cells[dataStart..<dataEnd]
+
+        // 6) Зібрати число з бітів (MSB ліворуч)
+        var value: UInt64 = 0
+        for b in dataBits {
+            value = (value << 1) | (b == 1 ? 1 : 0)
+        }
+
+        print("W_W_W code: \(value)")
+        return String(value)
     }
 }

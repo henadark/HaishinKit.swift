@@ -216,22 +216,4 @@ struct SaveStreamFramesBuilder {
             lastFrame: lastFrame
         )
     }
-
-    func buildFrameSnapshotWorker2(streamId: String = "1") throws -> FrameSnapshotWorker2 {
-        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB() //CGColorSpace(name: CGColorSpace.displayP3)
-        let context = CIContext(
-            options: [
-                .cacheIntermediates: false,
-                .useSoftwareRenderer: false,
-                .workingColorSpace: NSNull()
-            ]
-        )
-        let lastFrame = try buildLastFramesStore(streamId: streamId)
-
-        return FrameSnapshotWorker2(
-            colorSpace: colorSpace,
-            context: context,
-            lastFrame: lastFrame
-        )
-    }
 }
