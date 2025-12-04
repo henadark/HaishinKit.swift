@@ -127,13 +127,41 @@ final class PublishViewModel: ObservableObject {
         }
     }
 
+    func toggleAudioMuted() {
+        Task {
+            if isAudioMuted {
+                var settings = await mixer.audioMixerSettings
+                var track = settings.tracks[0] ?? .init()
+                track.isMuted = false
+                settings.tracks[0] = track
+                await mixer.setAudioMixerSettings(settings)
+                isAudioMuted = false
+            } else {
+                var settings = await mixer.audioMixerSettings
+                var track = settings.tracks[0] ?? .init()
+                track.isMuted = true
+                settings.tracks[0] = track
+                await mixer.setAudioMixerSettings(settings)
+                isAudioMuted = true
+            }
+        }
+    }
+
     func makeSession(_ preference: PreferenceViewModel) async throws {
         // Make session.
         session = try await SessionBuilderFactory.shared.make(preference.makeURL())
-            .setMethod(.ingest)
+            .setMode(.publish)
             .build()
 
         guard let session else { return }
+
+        let videoSettings = await session.stream.videoSettings
+        videoBitRates = Double(videoSettings.bitRate / 1000)
+        await session.stream.setBitRateStrategy(StatsMonitor({ data in
+            Task { @MainActor in
+                self.stats.append(data)
+            }
+        }))
 
         await mixer.addOutput(session.stream)
         tasks.append(Task {
@@ -222,6 +250,12 @@ final class PublishViewModel: ObservableObject {
             }
 
             await mixer.setVideoOrientation(.portrait)
+
+            if await preference.isGPURendererEnabled {
+                await mixer.screen.isGPURendererEnabled = true
+            } else {
+                await mixer.screen.isGPURendererEnabled = false
+            }
 
             let size = StreamSettingsConstants.streamScreenSize
             await mixer.screen.size = .init(width: size.width, height: size.height)
