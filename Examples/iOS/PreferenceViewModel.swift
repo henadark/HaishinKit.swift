@@ -1,7 +1,15 @@
+import Combine
 import HaishinKit
 import SwiftUI
 import AVFoundation
 import VideoToolbox
+
+enum ViewType: String, CaseIterable, Identifiable {
+    case metal
+    case pip
+
+    var id: Self { self }
+}
 
 @MainActor
 final class PreferenceViewModel: ObservableObject {
@@ -20,9 +28,16 @@ final class PreferenceViewModel: ObservableObject {
     var isLowLatencyRateControlEnabled: Bool = false
     let sessionPreset: AVCaptureSession.Preset = .hd4K3840x2160
 
+    // MARK: - Others
+    @Published var viewType: ViewType = .metal
+    var isGPURendererEnabled: Bool = true
+
     init() {
-        if #available(iOS 16.0, *) {
+        if #available(iOS 16.0, tvOS 16.0, *) {
             bitRateModes.append(.constant)
+        }
+        if #available(iOS 26.0, tvOS 26.0, macOS 26.0, *) {
+            bitRateModes.append(.variable)
         }
     }
 
