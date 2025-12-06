@@ -940,7 +940,7 @@ enum StreamSettingsConstants {
     static let sessionPreset: AVCaptureSession.Preset = .hd4K3840x2160
     static let defaultBitRate: Int = 1200 * 1000
     static let streamScreenSize = CGSize(width: 720, height: 1280)
-    static let originScreenSize: CGSize = CGSize(width: 3840, height: 2160)
+    static let originScreenSize: CGSize = CGSize(width: 2160, height: 3840)
     static let directoryPhotoshootsName = "PhotoshootFrames"
     static let prefixFrameNameFromat = "code_"
     static let suffixFrameNameFromat = ".jpg"
