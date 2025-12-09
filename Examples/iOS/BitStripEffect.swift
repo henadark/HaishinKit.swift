@@ -938,9 +938,20 @@ enum StreamSettingsConstants {
     static let fps: Int = 30
     static let imageCompressionQuality = 1.0
     static let sessionPreset: AVCaptureSession.Preset = .hd4K3840x2160
-    static let defaultBitRate: Int = 1200 * 1000
     static let streamScreenSize = CGSize(width: 720, height: 1280)
     static let originScreenSize: CGSize = CGSize(width: 2160, height: 3840)
+
+    static let defaultVideoBitRate: Int = 1200 * 1000
+    static let maximumVideoBitRate: Int = 2500 * 1000
+    static let minimumVideoBitRate: Int = 20 * 1000
+    static let increaseStepAdaptiveBitRate: Int = 200 * 1000 // mamimumVideoBitrate / 10
+    static let increaseThresholdAdaptiveBitRate: Int = 15
+    static let stableForLearnUpAdaptiveBitRate: Int = 60
+    static let learnDownFactorAdaptiveBitRate: Double = 0.9
+    static let learnUpFactorAdaptiveBitRate: Double = 1.05
+
+    static let defaultAudioBitRate: Int = 64 * 1000
+
     static let directoryPhotoshootsName = "PhotoshootFrames"
     static let prefixFrameNameFromat = "code_"
     static let suffixFrameNameFromat = ".jpg"

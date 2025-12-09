@@ -45,7 +45,7 @@ final class PreferenceViewModel: ObservableObject {
         var newSettings = settings
         newSettings.bitRateMode = bitRateMode
         newSettings.isLowLatencyRateControlEnabled = isLowLatencyRateControlEnabled
-        newSettings.bitRate = StreamSettingsConstants.defaultBitRate
+        newSettings.bitRate = StreamSettingsConstants.defaultVideoBitRate
         newSettings.profileLevel = kVTProfileLevel_H264_High_4_0 as String
         return newSettings
     }
@@ -53,7 +53,7 @@ final class PreferenceViewModel: ObservableObject {
     func makeAudioCodecSettings(_ settings: AudioCodecSettings) -> AudioCodecSettings {
         var newSettings = settings
         newSettings.format = audioFormat
-        newSettings.bitRate = 64 * 1000 // 64,000 bps
+        newSettings.bitRate = StreamSettingsConstants.defaultAudioBitRate // 64,000 bps
         return newSettings
     }
 

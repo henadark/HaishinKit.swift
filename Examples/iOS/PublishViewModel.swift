@@ -163,6 +163,9 @@ final class PublishViewModel: ObservableObject {
             }
         }))
 
+        let bitRateStrategy = AdaptiveStrategyBuilder().build()
+        await session.stream.setBitRateStrategy(bitRateStrategy)
+
         await mixer.addOutput(session.stream)
         tasks.append(Task {
             for await readyState in await session.readyState {
@@ -1129,6 +1132,126 @@ final class FrameStripeRenderer: FrameStripeRendererProtocol, @unchecked Sendabl
     }
 }
 
+public final actor AdaptiveBitRateStrategy: StreamBitRateStrategy {
+
+    public let mamimumVideoBitRate: Int          // hard max
+    public let mamimumAudioBitRate: Int
+    private let defaultVideoBitRate: Int         // використовується на reset
+    private let minVideoBitRate: Int             // floor
+    private let increaseThreshold: Int           // скільки status підряд для підвищення
+    private let increaseStep: Int                // крок підвищення
+    private let learnDownFactor: Double          // множник для зниження currentMax (напр. 0.9)
+    private let learnUpFactor: Double            // множник для підняття currentMax після стабільності (напр. 1.05)
+    private let stableForLearnUp: Int            // скільки status підряд для підняття currentMax
+
+    private var currentMax: Int
+    private var sufficientBWCounts = 0
+    private var zeroBytesOutPerSecondCounts = 0
+    private var stableCountsForCeiling = 0
+
+    public init(
+        mamimumVideoBitrate: Int,
+        defaultVideoBitrate: Int,
+        minVideoBitrate: Int,
+        mamimumAudioBitRate: Int,
+        increaseThreshold: Int,
+        increaseStep: Int,                 // якщо nil → 10% від hard max
+        learnDownFactor: Double,
+        learnUpFactor: Double,
+        stableForLearnUp: Int               // скільки status підряд без проблем, щоб підняти currentMax
+    ) {
+        self.mamimumVideoBitRate = mamimumVideoBitrate
+        self.defaultVideoBitRate = min(defaultVideoBitrate, mamimumVideoBitrate)
+        self.minVideoBitRate = minVideoBitrate
+        self.mamimumAudioBitRate = mamimumAudioBitRate
+        self.increaseThreshold = increaseThreshold
+        self.increaseStep = increaseStep
+        self.learnDownFactor = learnDownFactor
+        self.learnUpFactor = learnUpFactor
+        self.stableForLearnUp = stableForLearnUp
+        self.currentMax = mamimumVideoBitrate
+    }
+
+    public func adjustBitrate(_ event: NetworkMonitorEvent, stream: some StreamConvertible) async {
+        switch event {
+        case .status:
+            stableCountsForCeiling += 1
+            if stableCountsForCeiling >= stableForLearnUp {
+                currentMax = min(Int(Double(currentMax) * learnUpFactor), mamimumVideoBitRate)
+                stableCountsForCeiling = 0
+                logger.info("AB: status: increasing max to \(currentMax)")
+            }
+            var video = await stream.videoSettings
+            if video.bitRate < currentMax {
+                if sufficientBWCounts >= increaseThreshold {
+                    video.bitRate = min(video.bitRate + increaseStep, currentMax)
+                    sufficientBWCounts = 0
+
+                    if video.bitRate != mamimumVideoBitRate {
+                        try? await stream.setVideoSettings(video)
+                    } else {
+                        logger.info("AB: already MAXIMUM")
+                    }
+                    logger.info("AB: status: update video bitrate to \(video.bitRate)")
+                } else {
+                    sufficientBWCounts += 1
+                    logger.info("AB: status: increment sufficientBWCounts to \(sufficientBWCounts)")
+                }
+            } else {
+                sufficientBWCounts = 0
+                logger.info("AB: status: reset sufficientBWCounts")
+            }
+
+        case .publishInsufficientBWOccured(let report):
+            stableCountsForCeiling = 0
+            sufficientBWCounts = 0
+
+            var video = await stream.videoSettings
+            let audio = await stream.audioSettings
+            let newCeiling = Int(Double(video.bitRate) * learnDownFactor)
+
+            if report.currentBytesOutPerSecond > 0 {
+                var candidate = Int(report.currentBytesOutPerSecond * 8) / (zeroBytesOutPerSecondCounts + 1)
+                if zeroBytesOutPerSecondCounts == 0 {
+                    candidate = Int(Double(candidate) * learnDownFactor)
+                    logger.info("AB: first zeroBytesOutPerSecondCounts")
+                }
+                let target = max(candidate - audio.bitRate, minVideoBitRate)
+                video.bitRate = max(target, minVideoBitRate)
+                video.frameInterval = 0.0
+                zeroBytesOutPerSecondCounts = 0
+                currentMax = max(video.bitRate, newCeiling, minVideoBitRate)
+
+                logger.info("AB: publishInsufficientBWOccured: update video bitrate to \(video.bitRate) | report.currentBytesOutPerSecond * 8: \(report.currentBytesOutPerSecond * 8) | target: \(target) | candidate: \(candidate)")
+            } else {
+                switch zeroBytesOutPerSecondCounts {
+                case 2: video.frameInterval = VideoCodecSettings.frameInterval10
+                case 4: video.frameInterval = VideoCodecSettings.frameInterval05
+                default: break
+                }
+                zeroBytesOutPerSecondCounts += 1
+                logger.info("AB: publishInsufficientBWOccured: increment zeroBytesOutPerSecondCounts to \(zeroBytesOutPerSecondCounts). video.frameInterval: \(video.frameInterval)")
+            }
+            // знизити adaptive ceiling
+//            currentMax = max(video.bitRate, newCeiling, minVideoBitRate)
+            try? await stream.setVideoSettings(video)
+            logger.info("AB: publishInsufficientBWOccured: update currentMax to \(currentMax) | newCeiling: \(newCeiling) | video.bitRate: \(video.bitRate)")
+
+        case .reset:
+            sufficientBWCounts = 0
+            zeroBytesOutPerSecondCounts = 0
+            stableCountsForCeiling = 0
+            currentMax = mamimumVideoBitRate
+            var video = await stream.videoSettings
+            if video.bitRate != defaultVideoBitRate {
+                video.bitRate = defaultVideoBitRate
+                logger.info("AB: RESET!!!🔴🔴🔴")
+                try? await stream.setVideoSettings(video)
+            }
+        }
+    }
+}
+
 struct FrameStripeRendererBuilder {
 
     func buildFrameStripeRenderer() throws -> FrameStripeRenderer {
@@ -1166,6 +1289,24 @@ struct FrameStripeRendererBuilder {
         return FrameStripeRenderer(
             frameCounter: frameCounter,
             snapshotWorker: snapshotWorker
+        )
+    }
+}
+
+
+struct AdaptiveStrategyBuilder {
+
+    func build() -> AdaptiveBitRateStrategy {
+        return AdaptiveBitRateStrategy(
+            mamimumVideoBitrate: StreamSettingsConstants.maximumVideoBitRate,
+            defaultVideoBitrate: StreamSettingsConstants.defaultVideoBitRate,
+            minVideoBitrate: StreamSettingsConstants.minimumVideoBitRate,
+            mamimumAudioBitRate: StreamSettingsConstants.defaultAudioBitRate,
+            increaseThreshold: StreamSettingsConstants.increaseThresholdAdaptiveBitRate,
+            increaseStep: StreamSettingsConstants.increaseStepAdaptiveBitRate,
+            learnDownFactor: StreamSettingsConstants.learnDownFactorAdaptiveBitRate,
+            learnUpFactor: StreamSettingsConstants.learnUpFactorAdaptiveBitRate,
+            stableForLearnUp: StreamSettingsConstants.stableForLearnUpAdaptiveBitRate
         )
     }
 }
