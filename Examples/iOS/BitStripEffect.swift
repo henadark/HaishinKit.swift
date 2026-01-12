@@ -949,6 +949,7 @@ enum StreamSettingsConstants {
     static let stableForLearnUpAdaptiveBitRate: Int = 60
     static let learnDownFactorAdaptiveBitRate: Double = 0.9
     static let learnUpFactorAdaptiveBitRate: Double = 1.05
+    static let isDataRateLimitsEnable: Bool = false
 
     static let defaultAudioBitRate: Int = 64 * 1000
 

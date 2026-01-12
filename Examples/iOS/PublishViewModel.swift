@@ -164,6 +164,7 @@ final class PublishViewModel: ObservableObject {
         }))
 
         let bitRateStrategy = AdaptiveStrategyBuilder().build()
+//        let bitRateStrategy = StreamVideoAdaptiveBitRateStrategy(mamimumVideoBitrate: StreamSettingsConstants.maximumVideoBitRate)
         await session.stream.setBitRateStrategy(bitRateStrategy)
 
         await mixer.addOutput(session.stream)
@@ -1149,6 +1150,8 @@ public final actor AdaptiveBitRateStrategy: StreamBitRateStrategy {
     private var zeroBytesOutPerSecondCounts = 0
     private var stableCountsForCeiling = 0
 
+    private let isDataRateLimitsEnable: Bool
+
     public init(
         mamimumVideoBitrate: Int,
         defaultVideoBitrate: Int,
@@ -1158,7 +1161,8 @@ public final actor AdaptiveBitRateStrategy: StreamBitRateStrategy {
         increaseStep: Int,                 // якщо nil → 10% від hard max
         learnDownFactor: Double,
         learnUpFactor: Double,
-        stableForLearnUp: Int               // скільки status підряд без проблем, щоб підняти currentMax
+        stableForLearnUp: Int,               // скільки status підряд без проблем, щоб підняти currentMax
+        isDataRateLimitsEnable: Bool
     ) {
         self.mamimumVideoBitRate = mamimumVideoBitrate
         self.defaultVideoBitRate = min(defaultVideoBitrate, mamimumVideoBitrate)
@@ -1170,6 +1174,7 @@ public final actor AdaptiveBitRateStrategy: StreamBitRateStrategy {
         self.learnUpFactor = learnUpFactor
         self.stableForLearnUp = stableForLearnUp
         self.currentMax = mamimumVideoBitrate
+        self.isDataRateLimitsEnable = isDataRateLimitsEnable
     }
 
     public func adjustBitrate(_ event: NetworkMonitorEvent, stream: some StreamConvertible) async {
@@ -1184,15 +1189,19 @@ public final actor AdaptiveBitRateStrategy: StreamBitRateStrategy {
             var video = await stream.videoSettings
             if video.bitRate < currentMax {
                 if sufficientBWCounts >= increaseThreshold {
+                    let oldBitRate = video.bitRate
                     video.bitRate = min(video.bitRate + increaseStep, currentMax)
                     sufficientBWCounts = 0
 
-                    if video.bitRate != mamimumVideoBitRate {
+                    if video.bitRate != oldBitRate {
+                        if isDataRateLimitsEnable {
+                            video.dataRateLimits = calculateDataRateLimits(from: video)
+                        }
                         try? await stream.setVideoSettings(video)
+                        logger.info("AB: status: update video bitrate from \(oldBitRate) to \(video.bitRate) || mode: \(video.bitRateMode)")
                     } else {
                         logger.info("AB: already MAXIMUM")
                     }
-                    logger.info("AB: status: update video bitrate to \(video.bitRate)")
                 } else {
                     sufficientBWCounts += 1
                     logger.info("AB: status: increment sufficientBWCounts to \(sufficientBWCounts)")
@@ -1234,6 +1243,10 @@ public final actor AdaptiveBitRateStrategy: StreamBitRateStrategy {
             }
             // знизити adaptive ceiling
 //            currentMax = max(video.bitRate, newCeiling, minVideoBitRate)
+
+            if isDataRateLimitsEnable {
+                video.dataRateLimits = calculateDataRateLimits(from: video)
+            }
             try? await stream.setVideoSettings(video)
             logger.info("AB: publishInsufficientBWOccured: update currentMax to \(currentMax) | newCeiling: \(newCeiling) | video.bitRate: \(video.bitRate)")
 
@@ -1246,9 +1259,16 @@ public final actor AdaptiveBitRateStrategy: StreamBitRateStrategy {
             if video.bitRate != defaultVideoBitRate {
                 video.bitRate = defaultVideoBitRate
                 logger.info("AB: RESET!!!🔴🔴🔴")
+                if isDataRateLimitsEnable {
+                    video.dataRateLimits = calculateDataRateLimits(from: video)
+                }
                 try? await stream.setVideoSettings(video)
             }
         }
+    }
+
+    func calculateDataRateLimits(from videoSettings: VideoCodecSettings) -> [Double]? {
+        return [Double(videoSettings.bitRate) / 8 * 1.5, 1.0]
     }
 }
 
@@ -1306,7 +1326,8 @@ struct AdaptiveStrategyBuilder {
             increaseStep: StreamSettingsConstants.increaseStepAdaptiveBitRate,
             learnDownFactor: StreamSettingsConstants.learnDownFactorAdaptiveBitRate,
             learnUpFactor: StreamSettingsConstants.learnUpFactorAdaptiveBitRate,
-            stableForLearnUp: StreamSettingsConstants.stableForLearnUpAdaptiveBitRate
+            stableForLearnUp: StreamSettingsConstants.stableForLearnUpAdaptiveBitRate,
+            isDataRateLimitsEnable: StreamSettingsConstants.isDataRateLimitsEnable
         )
     }
 }
