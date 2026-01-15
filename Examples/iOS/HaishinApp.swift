@@ -44,8 +44,10 @@ struct HaishinApp: App {
         LBLogger(kSRTHaishinKitIdentifier).level = .debug
     }
 }
+
 struct LaunchScreen: View {
     @ObservedObject var vm: PhotoViewModel = PhotoViewModel()
+    var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
             VStack(spacing: 20) {
@@ -64,9 +66,13 @@ struct LaunchScreen: View {
     }
 }
 
+
 import Photos
 
 struct PhotoView: View {
+    @ObservedObject var vm: PhotoViewModel = PhotoViewModel()
+
+    var body: some View {
         VStack {
             HStack {
                 Text("HELLO")

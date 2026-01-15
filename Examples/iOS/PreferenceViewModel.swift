@@ -72,8 +72,7 @@ final class PreferenceViewModel: ObservableObject {
             UserDefaults.standard.set(isLowLatencyRateControlEnabled, forKey: Keys.isLowLatencyEnabled)
         }
     }
-    @Published var bitRateMode: VideoCodecSettings.BitRateMode = .average
-    var isLowLatencyRateControlEnabled: Bool = false
+    
     let sessionPreset: AVCaptureSession.Preset = .hd4K3840x2160
 
     // MARK: - Others

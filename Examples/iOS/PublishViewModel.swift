@@ -75,6 +75,7 @@ final class PublishViewModel: ObservableObject {
     private var recorder: StreamRecorder?
     private var currentPosition: AVCaptureDevice.Position = .back
     private var audioSourceService = AudioSourceService()
+    @ScreenActor private var videoScreenObject: VideoTrackScreenObject?
     @ScreenActor private var currentVideoEffect: VideoEffect?
     @ScreenActor private var bitStripEffect: BitStripEffect?
     private let barHeightPx: CGFloat = StreamSettingsConstants.bandHeightPx
@@ -307,8 +308,10 @@ final class PublishViewModel: ObservableObject {
 
 
     func startRunning(_ preference: PreferenceViewModel) {
+        let audioCaptureMode = preference.audioCaptureMode
+        let view = mtView
         Task { @ScreenActor in
-            await audioSourceService.setUp()
+            await audioSourceService.setUp(audioCaptureMode)
             await mixer.configuration { session in
                 switch audioCaptureMode {
                 case .audioSource:
@@ -425,10 +428,12 @@ final class PublishViewModel: ObservableObject {
 
             await mixer.startRunning()
 
-            isMixerReady = true
-            if let mtView {
-                await mixer.addOutput(mtView)
+            await MainActor.run { [weak self] in
+                self?.isMixerReady = true
             }
+//            if let view {
+//                await mixer.addOutput(view)
+//            }
 
             do {
                 try await makeSession(preference)
@@ -438,7 +443,12 @@ final class PublishViewModel: ObservableObject {
             }
 
             await startPublishing(preference)
+
+            Task { @MainActor [weak self] in
+                self?.changeZoomLevel(level: 2.0, isAnimated: false)
+            }
         }
+
         Task {
             for await sources in await audioSourceService.sourcesUpdates() {
                 audioSources = sources
@@ -446,8 +456,9 @@ final class PublishViewModel: ObservableObject {
                     audioSource = first
                 }
             }
-        })
-        startVolumeMonitoring()
+        }
+
+//        startVolumeMonitoring()
     }
 
     @ScreenActor
@@ -671,15 +682,33 @@ final class PublishViewModel: ObservableObject {
             self.startPublishing(preference)
         }
     }
+
+    func changeZoomLevel(level: CGFloat, isAnimated: Bool = true) {
+        let track: UInt8 = 0 // currentPosition == .back ? 0 : 1
+        Task {
+            try await mixer.configuration(video: track) { unit in
+                guard let device = unit.device else { return }
+                try device.lockForConfiguration()
+                defer { device.unlockForConfiguration() }
+
+                let clamped = min(max(level, device.minAvailableVideoZoomFactor), device.maxAvailableVideoZoomFactor)
+                if isAnimated {
+                    device.ramp(toVideoZoomFactor: clamped, withRate: 5.0)
+                } else {
+                    device.videoZoomFactor = clamped
+                }
+            }
+        }
+    }
 }
 
 extension PublishViewModel: MTHKViewRepresentable.PreviewSource {
     nonisolated func connect(to view: MTHKView) {
         Task { @MainActor in
             self.mtView = view
-            if isMixerReady {
+//            if isMixerReady {
                 await mixer.addOutput(view)
-            }
+//            }
         }
     }
 }
