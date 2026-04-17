@@ -1,4 +1,5 @@
 import AVFoundation
+import AVKit
 import HaishinKit
 import MediaPlayer
 import Photos
@@ -90,8 +91,9 @@ final class PublishViewModel: ObservableObject {
     private let fullResFrameHandler = FullResFrameHandler()
     private let frameStripeRenderer = try! FrameStripeRendererBuilder().buildFrameStripeRenderer()
     private var volumeObserver: NSKeyValueObservation?
-    private var mtView: MTHKView?
+    private var mtView: MediaMixerOutput?
     private var isMixerReady = false
+    private var pictureInPictureController: AVPictureInPictureController?
 
     init() {
         let defaults = UserDefaults.standard
@@ -1528,5 +1530,19 @@ struct AdaptiveStrategyBuilder {
             stableForLearnUp: StreamSettingsConstants.stableForLearnUpAdaptiveBitRate,
             isDataRateLimitsEnable: StreamSettingsConstants.isDataRateLimitsEnable
         )
+    }
+}
+
+extension PublishViewModel: PiPHKViewRepresentable.PreviewSource {
+    nonisolated func connect(to view: PiPHKView) {
+        Task { @MainActor in
+            self.mtView = view
+            if isMixerReady {
+                await mixer.addOutput(view)
+            }
+            if pictureInPictureController == nil {
+                pictureInPictureController = AVPictureInPictureController(contentSource: .init(sampleBufferDisplayLayer: view.layer, playbackDelegate: PlaybackDelegate()))
+            }
+        }
     }
 }
